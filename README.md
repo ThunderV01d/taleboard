@@ -1,4 +1,4 @@
-# Taleboard
+# TaleBoard
 
 Turn a story into an editable storyboard! You, the user, have control of framing, blocking, and pacing.
 
@@ -10,7 +10,7 @@ paint editor and image rendering are not yet built. See
 ## What this is
 
 Most "AI storyboard" tools hand you a finished image and hope it's right.
-Taleboard is built around a different idea: the model's job is to propose
+TaleBoard is built around a different idea: the model's job is to propose
 a starting point (who's in a shot, where they're positioned,
 how they're framed), not to be the final word on it. The user can paint
 directly onto a shot to fix a character's position, and only that shot
