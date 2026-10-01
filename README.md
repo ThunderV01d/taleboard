@@ -1,3 +1,4 @@
+[![CI](https://github.com/ThunderV01d/taleboard/actions/workflows/ci.yml/badge.svg)](https://github.com/ThunderV01d/taleboard/actions/workflows/ci.yml)
 # TaleBoard
 
 Turn a story into an editable storyboard! You, the user, have control of framing, blocking, and pacing.
