@@ -1,6 +1,5 @@
-from taleboard.parsing.cast_extraction import assign_char_ids
+from taleboard.parsing.cast_extraction import assign_char_ids, to_domain_character
 from taleboard.parsing.llm_schemas import LLMCharacterDraft
-
 
 def test_assign_char_ids_no_duplicates():
     characters = [
@@ -41,3 +40,17 @@ def test_assign_char_ids_impersonator_collision_does_not_lose_characters():
 
 def test_assign_char_ids_empty_list():
     assert assign_char_ids([]) == {}
+
+def test_to_domain_character_maps_fields():
+    draft = LLMCharacterDraft(name="Alice", description="A woman with red hair.")
+    character = to_domain_character(draft, colour="#ff0000", appearance_reference="alice_ref.png")
+    assert character.name == "Alice"
+    assert character.description == "A woman with red hair."
+    assert character.colour == "#ff0000"
+    assert character.appearance_reference == "alice_ref.png"
+
+
+def test_to_domain_character_defaults_appearance_reference_to_none():
+    draft = LLMCharacterDraft(name="Bob", description="A man with a beard.")
+    character = to_domain_character(draft, colour="#0000ff")
+    assert character.appearance_reference is None

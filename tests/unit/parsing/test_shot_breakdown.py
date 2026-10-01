@@ -1,8 +1,8 @@
 import json
 
 from taleboard.parsing.cast_extraction import assign_char_ids
-from taleboard.parsing.llm_schemas import LLMCharacterDraft
-from taleboard.parsing.shot_breakdown import get_shots_for_paragraph
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, build_shot_draft_model
+from taleboard.parsing.shot_breakdown import get_shots_for_paragraph, ShotResult, to_domain_shot
 
 
 def _make_cast() -> dict[str, LLMCharacterDraft]:
@@ -113,3 +113,49 @@ def test_get_shots_for_paragraph_handles_unparseable_response():
 
     assert len(results) == 1
     assert results[0].needs_review is True
+
+def test_to_domain_shot_maps_fields():
+    ShotModel = build_shot_draft_model(["alice", "bob"])
+    draft = ShotModel.model_validate({
+        "description": "Alice waves at Bob.",
+        "shot_size": "medium",
+        "angle": "eye_level",
+        "duration_s": 2.0,
+        "regions": [
+            {
+                "character_id": "alice",
+                "position": "mid_left",
+                "size": "medium",
+                "orientation": "towards_camera",
+                "action": "waving",
+            }
+        ],
+    })
+    result = ShotResult(shot=draft, needs_review=False)
+
+    shot = to_domain_shot(result, paragraph_index=3)
+
+    assert shot.description == "Alice waves at Bob."
+    assert shot.paragraph_index == 3
+    assert shot.needs_review is False
+    assert len(shot.regions) == 1
+    assert shot.regions[0].character_id == "alice"
+    assert shot.regions[0].action == "waving"
+    assert shot.regions[0].image_file is None
+
+
+def test_to_domain_shot_carries_needs_review_flag():
+    ShotModel = build_shot_draft_model(["alice"])
+    draft = ShotModel.model_validate({
+        "description": "fallback",
+        "shot_size": "medium",
+        "angle": "eye_level",
+        "duration_s": 2.0,
+        "regions": [],
+    })
+    result = ShotResult(shot=draft, needs_review=True)
+
+    shot = to_domain_shot(result, paragraph_index=0)
+
+    assert shot.needs_review is True
+    assert shot.regions == []

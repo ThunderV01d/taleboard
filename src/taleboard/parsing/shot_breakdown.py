@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError
 
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMShotDraft, build_shot_draft_model
 from taleboard.parsing.prompts import build_shot_breakdown_prompt
+from taleboard.schema.models import Region, Shot
 
 MAX_RETRIES = 2
 
@@ -54,7 +55,7 @@ def get_shots_for_paragraph(
             for failure in still_failing:
                 results.append(ShotResult(
                     shot=_fallback_shot(paragraph),
-                    needs_review=True,
+                    needs_review=True
                 ))
             break
 
@@ -97,5 +98,28 @@ def _fallback_shot(paragraph: str) -> LLMShotDraft:
         shot_size="medium",
         angle="eye_level",
         duration_s=2.0,
-        regions=[],
+        regions=[]
+    )
+
+def to_domain_shot(result: ShotResult, paragraph_index: int) -> Shot:
+    """Converts a ShotResult to a domain Shot"""
+    draft = result.shot
+    regions = [
+        Region(
+            character_id=r.character_id,
+            position=r.position,
+            size=r.size,
+            orientation=r.orientation,
+            action=r.action
+        )
+        for r in draft.regions
+    ]
+    return Shot(
+        description=draft.description,
+        regions = regions,
+        paragraph_index=paragraph_index,
+        shot_size=draft.shot_size,
+        angle=draft.angle,
+        duration_s=draft.duration_s,
+        needs_review=result.needs_review
     )

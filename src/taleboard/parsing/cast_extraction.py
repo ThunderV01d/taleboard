@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from typing import Callable
 
+from taleboard.schema.models import Character
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput
 from taleboard.parsing.prompts import build_cast_extraction_prompt
 
@@ -52,3 +53,12 @@ def extract_cast(
     data = json.loads(response_text)
     output = LLMCastOutput.model_validate(data)
     return assign_char_ids(output.characters)
+
+def to_domain_character(draft: LLMCharacterDraft, colour: str, appearance_reference: str | None = None) -> Character:
+    "Converts an LLMCharacterDraft to a domain Character, adding the colour and optional appearance reference."
+    return Character(
+        name=draft.name,
+        description=draft.description,
+        colour=colour,
+        appearance_reference=appearance_reference
+    )
