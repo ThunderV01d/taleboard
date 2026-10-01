@@ -1,5 +1,5 @@
 [project]
-name = "storyboard"
+name = "taleboard"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,3 +19,6 @@ markers = [
     "integration: tests that call real AWS Bedrock (slow, costs money, needs credentials)",
 ]
 testpaths = ["tests"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
