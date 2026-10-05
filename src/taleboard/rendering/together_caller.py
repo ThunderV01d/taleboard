@@ -10,7 +10,15 @@ DEFAULT_STEPS = 35
 
 
 load_dotenv()
-_client = Together()  #reads TOGETHER_API_KEY from the environment
+_get_client = Together | None = None
+
+def _get_client() -> Together:
+    """Lazily constructs the Together client on first real use, rather than at import time."""
+    global _get_client
+    if _get_client is None:
+        load_dotenv()
+        _get_client = Together()  #reads TOGETHER_API_KEY from the environment
+    return _get_client
 
 
 def generate_character_image(
@@ -40,5 +48,5 @@ def generate_character_image(
     if seed is not None:
         kwargs["seed"] = seed
 
-    response = _client.images.generate(**kwargs)
+    response = _get_client().images.generate(**kwargs)
     return base64.b64decode(response.data[0].b64_json)
