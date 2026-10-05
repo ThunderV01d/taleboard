@@ -1,12 +1,13 @@
 import json
 import boto3
 from pydantic import BaseModel
-
+from dotenv import load_dotenv
 
 def make_bedrock_caller(schema_model: type[BaseModel], model_id: str = "eu.anthropic.claude-haiku-4-5-20251001-v1:0", region_name: str = "eu-west-2"):
     """Returns a function matching the CallLLM signature from shot_breakdown.py
     (prompt in, raw text out).
     """
+    load_dotenv()
     client = boto3.client("bedrock-runtime", region_name=region_name)
     schema_json = json.dumps(schema_model.model_json_schema())
 

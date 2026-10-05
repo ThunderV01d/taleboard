@@ -5,6 +5,8 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2",
     "boto3",
+    "together",
+    "rembg[gpu]",
 ]
 
 [build-system]

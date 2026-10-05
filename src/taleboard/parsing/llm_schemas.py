@@ -4,7 +4,7 @@ from typing import Literal
 
 
 class LLMRegion(BaseModel):
-    """Represents a region in a shot"""
+    """Represents a region in a shot."""
     model_config = ConfigDict(extra="forbid")
     character_id: str
     position: PositionCell
@@ -13,18 +13,18 @@ class LLMRegion(BaseModel):
     action: str = Field(max_length=200)
 
 class LLMCharacterDraft(BaseModel):
-    """Represents a character to be generated"""
+    """Represents a character to be generated."""
     model_config = ConfigDict(extra="forbid")
     name: str
     description: str = Field(max_length=300)
 
 class LLMCastOutput(BaseModel):
-    """Represents the entire cast of characters to be generated"""
+    """Represents the entire cast of characters to be generated."""
     model_config = ConfigDict(extra="forbid")
     characters: list[LLMCharacterDraft]
     
 class LLMShotDraft(BaseModel):
-    """Represents a single shot to be generated"""
+    """Represents a single shot to be generated."""
     model_config = ConfigDict(extra="forbid")
     description: str
     shot_size: ShotSize
@@ -33,7 +33,7 @@ class LLMShotDraft(BaseModel):
     regions: list[LLMRegion]
 
 class LLMParagraphOutput(BaseModel):
-    """Represents a list of shots to be generated from a single paragraph"""
+    """Represents a list of shots to be generated from a single paragraph."""
     model_config = ConfigDict(extra="forbid")
     shots: list[LLMShotDraft]
 

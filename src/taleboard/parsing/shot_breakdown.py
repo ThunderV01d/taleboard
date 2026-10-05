@@ -102,7 +102,7 @@ def _fallback_shot(paragraph: str) -> LLMShotDraft:
     )
 
 def to_domain_shot(result: ShotResult, paragraph_index: int) -> Shot:
-    """Converts a ShotResult to a domain Shot"""
+    """Converts a ShotResult to a domain Shot."""
     draft = result.shot
     regions = [
         Region(

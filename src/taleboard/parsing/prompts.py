@@ -51,7 +51,7 @@ def build_shot_breakdown_prompt(
     cast: dict[str,LLMCharacterDraft],
     previous_shot: LLMShotDraft | None,
 ) -> str:
-    """Builds a prompt for breaking a paragraph into storyboard shots"""
+    """Builds a prompt for breaking a paragraph into storyboard shots."""
     cast_lines = "\n".join(
         f"- id: {cast_id}, name: {char.name}, description: {char.description}"
         for cast_id, char in cast.items()

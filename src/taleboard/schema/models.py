@@ -5,7 +5,7 @@ from taleboard.schema.enums import PositionCell, SizeInFrame, Orientation, ShotS
 
 class Character(BaseModel):
     """A character in the story, as the project stores and the user can
-    edit it"""
+    edit."""
     name: str
     description: str
     appearance_reference: str | None = None  #path/URL to a reference image
@@ -13,7 +13,7 @@ class Character(BaseModel):
 
 
 class Region(BaseModel):
-    """A single character's placement within a shot"""
+    """A single character's placement within a shot."""
     character_id: str
     position: PositionCell
     size: SizeInFrame
@@ -23,7 +23,7 @@ class Region(BaseModel):
 
 
 class Shot(BaseModel):
-    """One storyboard panel"""
+    """One storyboard panel."""
     description: str
     regions: list[Region]
     paragraph_index: int  #which paragraph of the story this shot came from
@@ -35,7 +35,7 @@ class Shot(BaseModel):
 
 
 class Project(BaseModel):
-    """A full storyboard project"""
+    """A full storyboard project."""
     title: str
     shots: list[Shot]
     cast: dict[str, Character]  #keyed by the same character_id used in Region
