@@ -10,15 +10,15 @@ DEFAULT_STEPS = 35
 
 
 load_dotenv()
-_get_client = Together | None = None
+_client: Together | None = None
 
 def _get_client() -> Together:
     """Lazily constructs the Together client on first real use, rather than at import time."""
-    global _get_client
-    if _get_client is None:
+    global _client
+    if _client is None:
         load_dotenv()
-        _get_client = Together()  #reads TOGETHER_API_KEY from the environment
-    return _get_client
+        _client = Together()  #reads TOGETHER_API_KEY from the environment
+    return _client
 
 
 def generate_character_image(
