@@ -7,6 +7,7 @@ dependencies = [
     "boto3",
     "together",
     "rembg[gpu]",
+    "python-dotenv",
 ]
 
 [build-system]
