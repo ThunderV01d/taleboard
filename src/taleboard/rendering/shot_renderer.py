@@ -1,37 +1,23 @@
 """Top-level orchestration for turning one Shot into a finished image."""
 import io
 from typing import Callable
-from PIL import Image, ImageOps
+from PIL import Image
 
 from taleboard.rendering import background_removal, compositor, together_caller
 from taleboard.rendering.prompts import build_background_prompt, build_character_prompt
-from taleboard.schema.enums import CameraAngle, Orientation, ShotSize
+from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Region, Shot
 
 CutoutCache = dict[tuple[str, str, str, str], bytes] #(character_id, action, orientation, angle) -> cutout bytes mapping
 BackgroundCache = dict[tuple[str, str, str], bytes]
-
+ReferenceImageCache = dict[str, bytes] #character_id -> reference image bytes mapping
 
 GenerateImage = Callable[[str, str], bytes] #(text, negative_text) -> raw image bytes mapping
 RemoveBackground = Callable[[bytes], bytes] #raw image bytes -> cutout bytes mapping
 
 
-def _canonicalize_orientation(orientation: Orientation) -> tuple[Orientation, bool]:
-    """Returns (orientation to actually generate/cache."""
-    if orientation == Orientation.RIGHT:
-        return Orientation.LEFT, True
-    return orientation, False
-
-def _cache_key(character_id: str, action: str, canonical_orientation: Orientation, angle: CameraAngle) -> tuple[str, str, str, str]:
-    return (character_id, action, canonical_orientation.value, angle.value)
-
-def _mirror_horizontally(image_bytes: bytes) -> bytes:
-    """Used to derive a RIGHT-facing cutout from a cached LEFT one."""
-    image = Image.open(io.BytesIO(image_bytes))
-    mirrored = ImageOps.mirror(image)
-    buffer = io.BytesIO()
-    mirrored.save(buffer, format="PNG")
-    return buffer.getvalue()
+def _cache_key(character_id: str, action: str, orientation: Orientation, angle: CameraAngle) -> tuple[str, str, str, str]:
+    return (character_id, action, orientation.value, angle.value)
 
 def _to_monochrome(image_bytes: bytes) -> bytes:
     """Deterministically strips all colour from a raw generation."""
@@ -47,10 +33,38 @@ def _to_monochrome(image_bytes: bytes) -> bytes:
     result.save(buffer, format="PNG")
     return buffer.getvalue()
 
+_NEUTRAL_REFERENCE_ACTION = "standing, neutral relaxed pose"
+
+def _get_or_create_reference_image(
+    character_id: str,
+    character: Character,
+    cache: ReferenceImageCache,
+    generate_image: GenerateImage,
+    remove_background: RemoveBackground,
+) -> bytes:
+    """Returns character_id's cached reference image, generating it once (and only once, ever) on first use."""
+    reference = cache.get(character_id)
+    if reference is not None:
+        return reference
+ 
+    neutral_region = Region(
+        character_id=character_id,
+        position=PositionCell.MID_CENTER,
+        size=SizeInFrame.MEDIUM,
+        orientation=Orientation.TOWARDS_CAMERA,
+        action=_NEUTRAL_REFERENCE_ACTION,
+    )
+    prompt = build_character_prompt(character, neutral_region, CameraAngle.EYE_LEVEL)
+    raw_image = generate_image(prompt.text, prompt.negative_text)
+    reference = remove_background(raw_image)
+    cache[character_id] = reference
+    return reference
+
 def render_characters(
     regions: list[Region],
     characters: dict[str, Character],
     cache: CutoutCache,
+    reference_cache: ReferenceImageCache,
     angle: CameraAngle = CameraAngle.EYE_LEVEL,
     shot_size: ShotSize = ShotSize.MEDIUM,
     generate_image: GenerateImage = together_caller.generate_character_image,
@@ -61,21 +75,17 @@ def render_characters(
     cutouts: dict[str, bytes] = {}
 
     for region in regions:
-        canonical_orientation, needs_mirror = _canonicalize_orientation(region.orientation)
-        key = _cache_key(region.character_id, region.action, canonical_orientation, angle)
+        key = _cache_key(region.character_id, region.action, region.orientation, angle)
         cutout = cache.get(key)
 
         if cutout is None:
             character = characters[region.character_id]
-            canonical_region = region.model_copy(update={"orientation": canonical_orientation})
-            prompt = build_character_prompt(character, canonical_region, angle)
-            raw_image = generate_image(prompt.text, prompt.negative_text)
+            reference  = _get_or_create_reference_image(region.character_id, character, reference_cache, generate_image, remove_background)
+            prompt = build_character_prompt(character, region, angle)
+            raw_image = generate_image(prompt.text, prompt.negative_text, reference_images=[reference])
             cutout = remove_background(raw_image)
             cutout = _to_monochrome(cutout)
             cache[key] = cutout
-
-        if needs_mirror:
-            cutout = _mirror_horizontally(cutout)
 
         #Debug: writes the raw cutouts to disk.
         # from pathlib import Path
@@ -113,6 +123,7 @@ def render_shot(
     characters: dict[str, Character],
     character_cache: CutoutCache,
     background_cache: BackgroundCache,
+    reference_cache: ReferenceImageCache,
     generate_image: GenerateImage | None = None,
     remove_background: RemoveBackground = background_removal.remove_background,
 ) -> bytes:
@@ -126,4 +137,4 @@ def render_shot(
     if not shot.regions:
         return background
  
-    return render_characters(shot.regions, characters, character_cache, shot.angle, shot.shot_size, generate_image=character_generate, remove_background=remove_background, background=background)
+    return render_characters(shot.regions, characters, character_cache, reference_cache, shot.angle, shot.shot_size, generate_image=character_generate, remove_background=remove_background, background=background)

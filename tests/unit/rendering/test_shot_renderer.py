@@ -5,7 +5,7 @@ from PIL import Image
 
 from taleboard.rendering import compositor
 from taleboard.rendering.prompts import CAMERA_ANGLE_PHRASES, STYLE_PREFIX
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, _background_cache_key, _canonicalize_orientation, _mirror_horizontally, _to_monochrome, render_background, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, ReferenceImageCache, _background_cache_key, _to_monochrome, render_background, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Region, Shot
 
@@ -58,24 +58,10 @@ def _fake_cutout_bytes() -> bytes:
     image.save(buffer, format="PNG")
     return buffer.getvalue()
 
-def _asymmetric_cutout_bytes() -> bytes:
-    """Left half red, right half blue, with real alpha -- lets a mirror
-    actually be observed (a solid-colour fixture would look identical
-    flipped or not).
-    """
-    image = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
-    for x in range(10):
-        for y in range(10):
-            color = (200, 30, 30, 255) if x < 5 else (30, 30, 200, 255)
-            image.putpixel((x, y), color)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
 def _make_fakes():
     calls = {"generate": 0}
 
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         calls["generate"] += 1
         return _solid_color_png((200, 30, 30))
 
@@ -116,29 +102,6 @@ def test_to_monochrome_preserves_alpha_channel():
     image = Image.open(io.BytesIO(result))
     assert image.getpixel((5, 5))[3] == 0
 
-def test_canonicalize_right_redirects_to_left_and_flags_mirror():
-    orientation, needs_mirror = _canonicalize_orientation(Orientation.RIGHT)
-    assert orientation == Orientation.LEFT
-    assert needs_mirror is True
-
-@pytest.mark.parametrize(
-    "orientation",
-    [Orientation.LEFT, Orientation.TOWARDS_CAMERA, Orientation.AWAY_FROM_CAMERA],
-)
-def test_canonicalize_leaves_other_orientations_unchanged(orientation):
-    canonical, needs_mirror = _canonicalize_orientation(orientation)
-    assert canonical == orientation
-    assert needs_mirror is False
- 
- 
-def test_mirror_horizontally_flips_left_and_right_halves():
-    asymmetric = _asymmetric_cutout_bytes()
-    result = _mirror_horizontally(asymmetric)
- 
-    image = Image.open(io.BytesIO(result))
-    assert image.getpixel((2, 5)) == (30, 30, 200, 255)  # was red, now blue
-    assert image.getpixel((7, 5)) == (200, 30, 30, 255)  # was blue, now red
-
 def test_renders_without_error_for_a_single_region():
     generate_image, remove_background, calls = _make_fakes()
 
@@ -146,12 +109,13 @@ def test_renders_without_error_for_a_single_region():
         regions=[_region()],
         characters=_character(),
         cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
     assert len(result) > 0
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2
 
 
 def test_same_character_action_orientation_only_generates_once():
@@ -163,11 +127,12 @@ def test_same_character_action_orientation_only_generates_once():
         regions=[region_a, region_b],
         characters=_character(),
         cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2
 
 
 def test_different_action_triggers_a_second_generation():
@@ -179,11 +144,12 @@ def test_different_action_triggers_a_second_generation():
         regions=[region_a, region_b],
         characters=_character(),
         cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
 
 
 def test_different_orientation_triggers_a_second_generation():
@@ -195,25 +161,25 @@ def test_different_orientation_triggers_a_second_generation():
         regions=[region_a, region_b],
         characters=_character(),
         cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
 
 
 def test_cache_is_reused_across_separate_render_shot_calls():
     generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
     region = _region()
     characters = _character()
 
-    render_characters(regions=[region], characters=characters, cache=cache,
-                generate_image=generate_image, remove_background=remove_background)
-    render_characters(regions=[region], characters=characters, cache=cache,
-                generate_image=generate_image, remove_background=remove_background)
+    render_characters(regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, generate_image=generate_image, remove_background=remove_background)
+    render_characters(regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, generate_image=generate_image, remove_background=remove_background)
 
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2
 
 
 def test_different_character_sharing_a_pose_still_shares_nothing():
@@ -226,11 +192,12 @@ def test_different_character_sharing_a_pose_still_shares_nothing():
         regions=[region_a, region_b],
         characters=characters,
         cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 4
 
 
 def test_region_for_unknown_character_raises():
@@ -241,6 +208,7 @@ def test_region_for_unknown_character_raises():
             regions=[_region(character_id="nobody")],
             characters=_character("alice"),
             cache={},
+            reference_cache={},
             generate_image=generate_image,
             remove_background=remove_background,
         )
@@ -249,7 +217,7 @@ def test_remove_background_receives_the_raw_coloured_generation():
     """Confirms the pipeline ordering: generate -> remove_background -> strip colour, not generate -> strip colour -> remove_background."""
     received: dict[str, bytes] = {}
  
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         return _solid_color_png((200, 30, 30))
  
     def spying_remove_background(raw_bytes: bytes) -> bytes:
@@ -260,6 +228,7 @@ def test_remove_background_receives_the_raw_coloured_generation():
         regions=[_region()],
         characters=_character(),
         cache={},
+        reference_cache={},
         generate_image=fake_generate_image,
         remove_background=spying_remove_background,
     )
@@ -267,16 +236,17 @@ def test_remove_background_receives_the_raw_coloured_generation():
     image = Image.open(io.BytesIO(received["raw_bytes"])).convert("RGB")
     assert image.getpixel((5, 5)) == (200, 30, 30)
  
-def test_right_orientation_reuses_a_cached_left_generation():
-    """The actual point of mirroring: a RIGHT region should never trigger its own generation call if the matching LEFT pose is already cached."""
+def test_left_and_right_orientation_each_generate_independently():
     generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
     characters = _character()
  
     render_characters(
         regions=[_region(orientation=Orientation.LEFT)],
         characters=characters,
         cache=cache,
+        reference_cache=reference_cache,
         generate_image=generate_image,
         remove_background=remove_background,
     )
@@ -284,79 +254,36 @@ def test_right_orientation_reuses_a_cached_left_generation():
         regions=[_region(orientation=Orientation.RIGHT)],
         characters=characters,
         cache=cache,
+        reference_cache=reference_cache,
         generate_image=generate_image,
         remove_background=remove_background,
     )
  
-    assert calls["generate"] == 1
- 
- 
-def test_right_orientation_alone_still_only_generates_once():
-    """A RIGHT region with nothing cached yet should generate the LEFT pose (not a real RIGHT generation) and derive its own cutout by mirroring -- still exactly one generation call.
-    """
-    generate_image, remove_background, calls = _make_fakes()
- 
-    render_characters(
-        regions=[_region(orientation=Orientation.RIGHT)],
-        characters=_character(),
-        cache={},
-        generate_image=generate_image,
-        remove_background=remove_background,
-    )
- 
-    assert calls["generate"] == 1
- 
- 
-def test_right_orientation_is_never_used_as_a_cache_key():
-    """Whatever gets cached, it's always under the canonical LEFT key -- nothing should ever be stored keyed by RIGHT."""
-    generate_image, remove_background, _ = _make_fakes()
-    cache: CutoutCache = {}
- 
-    render_characters(
-        regions=[_region(orientation=Orientation.RIGHT)],
-        characters=_character(),
-        cache=cache,
-        generate_image=generate_image,
-        remove_background=remove_background,
-    )
- 
+    # First call: one reference + one real LEFT pose. Second call: the
+    # reference is already cached (same character), but RIGHT is its own
+    # distinct orientation now -- a cutout-cache miss, so a real second
+    # pose generation, not a cache hit.
+    assert calls["generate"] == 3
     assert ("alice", "standing", Orientation.LEFT.value, CameraAngle.EYE_LEVEL.value) in cache
-    assert ("alice", "standing", Orientation.RIGHT.value, CameraAngle.EYE_LEVEL.value) not in cache
+    assert ("alice", "standing", Orientation.RIGHT.value, CameraAngle.EYE_LEVEL.value) in cache
  
  
-def test_right_orientation_output_is_the_mirror_of_left():
-    """Black-box confirmation that render_shot actually flips the cutout for a RIGHT region: its output should be byte-for-byte what you'd get from manually mirroring the cached LEFT cutout and compositing that -- using an asymmetric fake so a mirror is actually observable (a solid-colour fake would pass even with no mirroring at all)."""
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
-        return _solid_color_png((200, 30, 30))
- 
-    def fake_remove_background(raw_bytes: bytes) -> bytes:
-        return _asymmetric_cutout_bytes()
- 
+def test_right_orientation_alone_generates_its_own_real_pose():
+    generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
  
     render_characters(
-        regions=[_region(character_id="alice", orientation=Orientation.LEFT)],
-        characters=_character("alice"),
+        regions=[_region(orientation=Orientation.RIGHT)],
+        characters=_character(),
         cache=cache,
-        generate_image=fake_generate_image,
-        remove_background=fake_remove_background,
-    )
-    left_cutout = cache[("alice", "standing", Orientation.LEFT.value, CameraAngle.EYE_LEVEL.value)]
- 
-    bob_region = _region(character_id="bob", orientation=Orientation.RIGHT)
-    right_result = render_characters(
-        regions=[bob_region],
-        characters=_character("bob"),
-        cache=cache,
-        generate_image=fake_generate_image,
-        remove_background=fake_remove_background,
+        reference_cache={},
+        generate_image=generate_image,
+        remove_background=remove_background,
     )
  
-    expected_mirrored_cutout = _mirror_horizontally(left_cutout)
-    expected_composite = compositor.compose_shot([bob_region], {"bob": expected_mirrored_cutout})
- 
-    assert right_result == expected_composite
-
+    assert calls["generate"] == 2  # one reference + one real RIGHT pose
+    assert ("alice", "standing", Orientation.RIGHT.value, CameraAngle.EYE_LEVEL.value) in cache
+    assert ("alice", "standing", Orientation.LEFT.value, CameraAngle.EYE_LEVEL.value) not in cache
 
 def test_cached_cutout_is_monochrome():
     generate_image, remove_background, _ = _make_fakes()
@@ -366,6 +293,7 @@ def test_cached_cutout_is_monochrome():
         regions=[_region()],
         characters=_character(),
         cache=cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
@@ -383,6 +311,7 @@ def test_render_characters_defaults_reproduce_the_pre_angle_cache_key():
         regions=[_region()],
         characters=_character(),
         cache=cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
@@ -393,19 +322,18 @@ def test_render_characters_defaults_reproduce_the_pre_angle_cache_key():
 def test_different_camera_angle_triggers_a_second_generation():
     generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
     region = _region()
     characters = _character()
  
     render_characters(
-        regions=[region], characters=characters, cache=cache, angle=CameraAngle.EYE_LEVEL,
-        generate_image=generate_image, remove_background=remove_background,
+        regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.EYE_LEVEL, generate_image=generate_image, remove_background=remove_background,
     )
     render_characters(
-        regions=[region], characters=characters, cache=cache, angle=CameraAngle.LOW,
-        generate_image=generate_image, remove_background=remove_background,
+        regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.LOW, generate_image=generate_image, remove_background=remove_background,
     )
  
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
     assert ("alice", "standing", Orientation.TOWARDS_CAMERA.value, CameraAngle.EYE_LEVEL.value) in cache
     assert ("alice", "standing", Orientation.TOWARDS_CAMERA.value, CameraAngle.LOW.value) in cache
  
@@ -413,41 +341,39 @@ def test_different_camera_angle_triggers_a_second_generation():
 def test_same_camera_angle_reuses_the_cache():
     generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
     region = _region()
     characters = _character()
  
     render_characters(
-        regions=[region], characters=characters, cache=cache, angle=CameraAngle.HIGH,
-        generate_image=generate_image, remove_background=remove_background,
+        regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.HIGH, generate_image=generate_image, remove_background=remove_background,
     )
     render_characters(
-        regions=[region], characters=characters, cache=cache, angle=CameraAngle.HIGH,
-        generate_image=generate_image, remove_background=remove_background,
+        regions=[region], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.HIGH, generate_image=generate_image, remove_background=remove_background,
     )
  
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2
  
  
-def test_mirrored_left_orientation_still_respects_camera_angle_in_the_cache_key():
+def test_right_orientation_still_respects_camera_angle_in_the_cache_key():
     generate_image, remove_background, calls = _make_fakes()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
     characters = _character()
  
     render_characters(
-        regions=[_region(orientation=Orientation.RIGHT)], characters=characters, cache=cache,
-        angle=CameraAngle.LOW, generate_image=generate_image, remove_background=remove_background,
+        regions=[_region(orientation=Orientation.RIGHT)], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.LOW, generate_image=generate_image, remove_background=remove_background,
     )
     render_characters(
-        regions=[_region(orientation=Orientation.LEFT)], characters=characters, cache=cache,
-        angle=CameraAngle.LOW, generate_image=generate_image, remove_background=remove_background,
+        regions=[_region(orientation=Orientation.LEFT)], characters=characters, cache=cache, reference_cache=reference_cache, angle=CameraAngle.LOW, generate_image=generate_image, remove_background=remove_background,
     )
  
-    assert calls["generate"] == 1
+    assert calls["generate"] == 3
     assert ("alice", "standing", Orientation.LEFT.value, CameraAngle.LOW.value) in cache
 
  
 def test_render_characters_passes_shot_size_through_to_compositing():
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         return _solid_color_png((200, 30, 30))
  
     def fake_remove_background(raw_bytes: bytes) -> bytes:
@@ -457,18 +383,18 @@ def test_render_characters_passes_shot_size_through_to_compositing():
     characters = _character()
  
     wide_result = render_characters(
-        regions=[region], characters=characters, cache={}, shot_size=ShotSize.WIDE,
+        regions=[region], characters=characters, cache={}, reference_cache={}, shot_size=ShotSize.WIDE,
         generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
     close_up_result = render_characters(
-        regions=[region], characters=characters, cache={}, shot_size=ShotSize.CLOSE_UP,
+        regions=[region], characters=characters, cache={}, reference_cache={}, shot_size=ShotSize.CLOSE_UP,
         generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
  
     assert wide_result != close_up_result
 
 def test_render_characters_background_param_changes_the_output():
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         return _solid_color_png((200, 30, 30))
  
     def fake_remove_background(raw_bytes: bytes) -> bytes:
@@ -479,12 +405,11 @@ def test_render_characters_background_param_changes_the_output():
     characters = _character()
  
     with_background = render_characters(
-        regions=[region], characters=characters, cache={}, background=background,
+        regions=[region], characters=characters, cache={}, reference_cache={}, background=background,
         generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
     without_background = render_characters(
-        regions=[region], characters=characters, cache={},
-        generate_image=fake_generate_image, remove_background=fake_remove_background,
+        regions=[region], characters=characters, cache={}, reference_cache={}, generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
  
     assert with_background != without_background
@@ -609,7 +534,7 @@ def test_render_shot_with_no_regions_renders_a_background():
     character_calls = {"generate": 0}
     background_calls = {"generate": 0}
  
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         # Shared fake for both paths -- whichever one actually gets called
         # bumps its own counter via closures below instead, so keep this
         # one trivial.
@@ -626,6 +551,7 @@ def test_render_shot_with_no_regions_renders_a_background():
         characters={},
         character_cache={},
         background_cache={},
+        reference_cache={},
         generate_image=fake_generate_image,
         remove_background=spying_remove_background,
     )
@@ -646,6 +572,7 @@ def test_render_shot_with_no_regions_uses_the_background_cache():
         characters={},
         character_cache={},
         background_cache=background_cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=lambda raw: raw,
     )
@@ -654,6 +581,7 @@ def test_render_shot_with_no_regions_uses_the_background_cache():
         characters={},
         character_cache={},
         background_cache=background_cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=lambda raw: raw,
     )
@@ -671,12 +599,13 @@ def test_render_shot_with_regions_renders_characters_and_background():
         characters=_character(),
         character_cache={},
         background_cache={},
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
  
     assert len(result) > 0
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
  
  
 def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
@@ -691,6 +620,7 @@ def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
         characters=_character(),
         character_cache=character_cache,
         background_cache=background_cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
@@ -699,17 +629,18 @@ def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
         characters=_character(),
         character_cache=character_cache,
         background_cache=background_cache,
+        reference_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
  
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
     assert ("alice", "standing", Orientation.TOWARDS_CAMERA.value, CameraAngle.EYE_LEVEL.value) in character_cache
 
 def test_render_shot_composites_characters_over_the_rendered_background():
     """A shot with regions no longer composites onto plain white -- a point well outside any character's box should show the rendered background's own colour.
     """
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         return _solid_color_png((60, 120, 180))
  
     def fake_remove_background(raw_bytes: bytes) -> bytes:
@@ -722,6 +653,7 @@ def test_render_shot_composites_characters_over_the_rendered_background():
         characters=_character(),
         character_cache={},
         background_cache={},
+        reference_cache={},
         generate_image=fake_generate_image,
         remove_background=fake_remove_background,
     )
@@ -738,7 +670,7 @@ def test_render_shot_passes_the_shots_angle_to_render_characters():
     """render_shot's dispatcher must forward shot.angle, not just shot.regions/characters"""
     captured_prompts: list[str] = []
  
-    def spying_generate_image(text: str, negative_text: str) -> bytes:
+    def spying_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         captured_prompts.append(text)
         return _solid_color_png((200, 30, 30))
  
@@ -752,16 +684,17 @@ def test_render_shot_passes_the_shots_angle_to_render_characters():
         characters=_character(),
         character_cache={},
         background_cache={},
+        reference_cache={},
         generate_image=spying_generate_image,
         remove_background=fake_remove_background,
     )
 
-    character_prompt = next(p for p in captured_prompts if p.startswith(STYLE_PREFIX))
-    assert CAMERA_ANGLE_PHRASES[CameraAngle.LOW] in character_prompt
+    character_prompts = [p for p in captured_prompts if p.startswith(STYLE_PREFIX)]
+    assert any(CAMERA_ANGLE_PHRASES[CameraAngle.LOW] in p for p in character_prompts)
 
 def test_render_shot_passes_the_shots_shot_size_to_render_characters():
     """render_shot's dispatcher must forward shot.shot_size too."""
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         return _solid_color_png((200, 30, 30))
  
     def fake_remove_background(raw_bytes: bytes) -> bytes:
@@ -771,12 +704,131 @@ def test_render_shot_passes_the_shots_shot_size_to_render_characters():
     close_up_shot = _shot(regions=[_region()], setting="an empty hallway", shot_size=ShotSize.CLOSE_UP)
  
     wide_result = render_shot(
-        shot=wide_shot, characters=_character(), character_cache={}, background_cache={},
-        generate_image=fake_generate_image, remove_background=fake_remove_background,
+        shot=wide_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={}, generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
     close_up_result = render_shot(
-        shot=close_up_shot, characters=_character(), character_cache={}, background_cache={},
-        generate_image=fake_generate_image, remove_background=fake_remove_background,
+        shot=close_up_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={},  generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
 
     assert wide_result != close_up_result
+
+
+def test_reference_image_generated_once_per_character_and_reused_across_poses():
+    """A character's reference image is generated on its first pose, then
+    reused (not regenerated) for every later pose -- that's the entire
+    point of caching it separately from the pose itself.
+    """
+    generate_image, remove_background, calls = _make_fakes()
+    reference_cache: ReferenceImageCache = {}
+    characters = _character()
+ 
+    render_characters(
+        regions=[_region(action="standing")],
+        characters=characters,
+        cache={},
+        reference_cache=reference_cache,
+        generate_image=generate_image,
+        remove_background=remove_background,
+    )
+    render_characters(
+        regions=[_region(action="waving")],
+        characters=characters,
+        cache={},
+        reference_cache=reference_cache,
+        generate_image=generate_image,
+        remove_background=remove_background,
+    )
+ 
+    # First pose: one reference + one pose generation. Second pose (a
+    # different action, so the pose itself can't be cached): the
+    # reference is already in reference_cache, so only one more call.
+    assert calls["generate"] == 3
+    assert "alice" in reference_cache
+ 
+ 
+def test_reference_image_passed_through_to_generate_image():
+    """The character's reference bytes should actually reach
+    generate_image's reference_images kwarg on the pose-generation call,
+    not just get generated and discarded.
+    """
+    received: list[list[bytes] | None] = []
+ 
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
+        received.append(reference_images)
+        return _solid_color_png((200, 30, 30))
+ 
+    def fake_remove_background(raw_bytes: bytes) -> bytes:
+        return _fake_cutout_bytes()
+ 
+    render_characters(
+        regions=[_region()],
+        characters=_character(),
+        cache={},
+        reference_cache={},
+        generate_image=fake_generate_image,
+        remove_background=fake_remove_background,
+    )
+
+    assert len(received) == 2
+    assert received[0] is None
+    assert received[1] is not None
+    assert len(received[1]) == 1
+ 
+ 
+def test_reference_cache_is_separate_from_cutout_cache():
+    """A character's reference image lives in its own cache, keyed only
+    by character_id -- it must never show up in (and never be confused
+    with) the pose-keyed CutoutCache.
+    """
+    generate_image, remove_background, _ = _make_fakes()
+    cutout_cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
+ 
+    render_characters(
+        regions=[_region()],
+        characters=_character(),
+        cache=cutout_cache,
+        reference_cache=reference_cache,
+        generate_image=generate_image,
+        remove_background=remove_background,
+    )
+ 
+    assert "alice" in reference_cache
+    assert ("alice", "standing", Orientation.TOWARDS_CAMERA.value, CameraAngle.EYE_LEVEL.value) in cutout_cache
+    # The reference cache is keyed purely by character_id; the cutout
+    # cache by the (character_id, action, orientation, angle) tuple -- a
+    # bare "alice" key would never collide with or appear in the other.
+    assert list(reference_cache.keys()) == ["alice"]
+    assert "alice" not in cutout_cache
+ 
+ 
+def test_second_character_gets_its_own_reference_not_a_shared_one():
+    """Alice's reference image must never be reused for Bob -- each
+    character_id gets its own independently-generated reference, even
+    though both go through the exact same fake generate_image/remove_background.
+    """
+    generate_image, remove_background, calls = _make_fakes()
+    reference_cache: ReferenceImageCache = {}
+    characters = {**_character("alice"), **_character("bob")}
+ 
+    render_characters(
+        regions=[_region(character_id="alice")],
+        characters=characters,
+        cache={},
+        reference_cache=reference_cache,
+        generate_image=generate_image,
+        remove_background=remove_background,
+    )
+    render_characters(
+        regions=[_region(character_id="bob")],
+        characters=characters,
+        cache={},
+        reference_cache=reference_cache,
+        generate_image=generate_image,
+        remove_background=remove_background,
+    )
+ 
+    # Alice: reference + pose. Bob: a separate reference (cache miss on
+    # his own character_id) + his own pose. Nothing shared.
+    assert calls["generate"] == 4
+    assert set(reference_cache.keys()) == {"alice", "bob"}

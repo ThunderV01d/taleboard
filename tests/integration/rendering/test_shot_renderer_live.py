@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from taleboard.rendering import together_caller
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, ReferenceImageCache, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Region, Shot
 
@@ -28,15 +28,15 @@ def _test_regions() -> list[Region]:
     return [
         Region(
             character_id="alice",
-            position=PositionCell.MID_LEFT,
-            size=SizeInFrame.MEDIUM,
+            position=PositionCell.BOTTOM_LEFT,
+            size=SizeInFrame.LARGE,
             orientation=Orientation.RIGHT,  #facing right, i.e. towards Bob
             action="standing",
         ),
         Region(
             character_id="bob",
-            position=PositionCell.MID_RIGHT,
-            size=SizeInFrame.MEDIUM,
+            position=PositionCell.BOTTOM_RIGHT,
+            size=SizeInFrame.LARGE,
             orientation=Orientation.LEFT,  #facing left, i.e. towards Alice
             action="standing",
         ),
@@ -54,23 +54,25 @@ def test_render_shot_end_to_end_and_cache_reuse_against_real_services():
     call_count = 0
     real_generate = together_caller.generate_character_image
 
-    def counting_generate(text: str, negative_text: str) -> bytes:
+    def counting_generate(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         nonlocal call_count
         call_count += 1
-        return real_generate(text, negative_text)
+        return real_generate(text, negative_text, reference_images=reference_images)
 
     characters = _test_characters()
     regions = _test_regions()
     cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
 
     first_result = render_characters(
         regions=regions,
         characters=characters,
         cache=cache,
+        reference_cache=reference_cache,
         generate_image=counting_generate,
     )
     assert len(first_result) > 0
-    assert call_count == 2 #one per character, nothing cached yet
+    assert call_count == 4
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "composited_shot.png").write_bytes(first_result)
@@ -79,9 +81,10 @@ def test_render_shot_end_to_end_and_cache_reuse_against_real_services():
         regions=regions,
         characters=characters,
         cache=cache,
+        reference_cache=reference_cache,
         generate_image=counting_generate,
     )
-    assert call_count == 2 #unchanged: both regions reused from cache
+    assert call_count == 4
     assert second_result == first_result
 
 @pytest.mark.integration
@@ -118,6 +121,7 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         characters={},
         character_cache={},
         background_cache=background_cache,
+        reference_cache={},
     )
     assert len(first_result) > 0
     assert call_count == 1  # one background render, no character calls at all
@@ -130,6 +134,7 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         characters={},
         character_cache={},
         background_cache=background_cache,
+        reference_cache={},
     )
     assert call_count == 1  # unchanged: reused from the background cache
     assert second_result == first_result
@@ -141,10 +146,10 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
     real_generate_character = together_caller.generate_character_image
     real_generate_background = together_caller.generate_background_image
  
-    def counting_generate_character(text: str, negative_text: str) -> bytes:
+    def counting_generate_character(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         nonlocal call_count
         call_count += 1
-        return real_generate_character(text, negative_text)
+        return real_generate_character(text, negative_text, reference_images=reference_images)
  
     def counting_generate_background(text: str, negative_text: str) -> bytes:
         nonlocal call_count
@@ -159,22 +164,24 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         setting="a dim narrow hallway with peeling wallpaper and a single overhead bulb",
         regions=_test_regions(),
         paragraph_index=0,
-        shot_size=ShotSize.MEDIUM,
-        angle=CameraAngle.EYE_LEVEL,
+        shot_size=ShotSize.CLOSE_UP,
+        angle=CameraAngle.HIGH,
         duration_s=2.0,
     )
     characters = _test_characters()
     character_cache: CutoutCache = {}
     background_cache: BackgroundCache = {}
- 
+    reference_cache: ReferenceImageCache = {}
+
     first_result = render_shot(
         shot=shot,
         characters=characters,
         character_cache=character_cache,
         background_cache=background_cache,
+        reference_cache=reference_cache,
     )
     assert len(first_result) > 0
-    assert call_count == 3  #one background + one per distinct character_id
+    assert call_count == 5
  
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "composited_shot_with_background.png").write_bytes(first_result)
@@ -184,6 +191,7 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         characters=characters,
         character_cache=character_cache,
         background_cache=background_cache,
+        reference_cache=reference_cache,
     )
-    assert call_count == 3
+    assert call_count == 5
     assert second_result == first_result

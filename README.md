@@ -55,54 +55,25 @@ all validated against a strict schema rather than trusted as free text.
   background is that both prompts share the same camera-angle wording —
   no true perspective or scale matching is attempted, by design (see Known
   issues).
-- **Shot size affects composited scale** — a close-up, medium, or wide shot
-  size now actually changes how large a character reads on the canvas, on
-  top of each region's own relative size.
-- **LEFT/RIGHT orientation via mirroring** — a sideways-facing region is
-  never generated twice. One real generation is produced for a canonical
-  direction, and the opposite-facing cutout is derived by mirroring it —
-  cheaper than a second generation, and guarantees the two actually match
-  (two independent generations have no reason to agree on pose, proportions,
-  or clothing folds).
+- **Shot size affects composited scale** — a close-up, medium, or wide shot size now actually changes how large a character reads on the canvas, on top of each region's own relative size.
+- **Character consistency via reference conditioning** — each character
+  gets one neutral reference pose (eye-level, facing camera), generated
+  once per project and cached. Every subsequent pose of that character is
+  conditioned on it through FLUX.2's `reference_images` input, so a
+  character keeps the same look across different shots and poses.
+- **Direct LEFT/RIGHT orientation** — FLUX.2-dev follows directional prompts reliably, so every orientation is its own real generation (with its own cache entry).
 - **Partial regeneration via caching** — a generation is only ever produced
   once per unique `(character, action, orientation, camera angle)`
   combination; any later shot reusing that exact combination (anywhere in
   the project, not just the adjacent shot) reuses the cached cutout instead
   of paying for a new one. Backgrounds are cached separately, keyed on
   `(setting, shot_size, angle)`.
+  Each character's reference image is cached once for the whole project.
 
 **Known issues:**
-- **Full-body framing is unreliable.** SDXL doesn't consistently honour
-  "full body shot, entire figure visible" from prompt text alone — a
-  square generation frame made this worse by giving a standing figure no
-  room to fit head-to-toe, so character generations now request a
-  portrait frame (768×1024, the tallest ratio Together's hosted endpoint
-  allows) instead of square. This helps but doesn't fully solve it; since
-  the compositor scales a cutout by its full height to hit a region's
-  target size, an under-framed cutout still reads as oversized relative to
-  a correctly-framed one in the same shot.
-- **Occasionally a generation includes an extra, unrequested person or
-  shadow figure in frame**, generated as part of the same image as the
-  intended character — not something background removal can clean up,
-  since it looks like one connected subject. The negative prompt now
-  explicitly discourages this ("duplicate figure, second person, twin,
-  shadow...") but it's a reduction, not a guarantee.
-- **Left/right orientation accuracy depends on prompt wording that's still
-  being refined** — SDXL's compliance with directional ("facing
-  left/right") instructions is inherently less reliable than other
-  attributes, and an occasional wrong-direction generation is possible
-  even with the current prompt.
-- **No character consistency across shots.** Each generation of a given
-  `(character, action, orientation, angle)` combination is independent —
-  nothing conditions a new generation on how that character has looked in
-  earlier shots, so the same character can drift in appearance across a
-  story.
-- **Character/background compositing has no perspective or scale
-  matching.** A character cutout and its background are two independently
-  generated images; the only thing tying them together is sharing the same
-  camera-angle wording. This was an explicit, accepted trade-off rather
-  than an oversight — true scene-consistent compositing would need real 3D
-  scene reasoning neither generation call does.
+- **Camera angle-prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)
+
+- **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight — true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point.
 
 **Not yet built:**
 - A persisted `Project` container tying validated shots together as an
@@ -143,11 +114,9 @@ all validated against a strict schema rather than trusted as free text.
    background first (square-framed), then, if the shot has character
    regions, each region is turned into a prompt (style, orientation,
    camera angle, and the character's own description/action), sent to
-   Together AI's Stable Diffusion XL (portrait-framed, to give a standing
-   figure room to fit head-to-toe), background-removed, and
-   deterministically converted to monochrome. Sideways-facing regions reuse
-   a single real generation via horizontal mirroring rather than generating
-   both directions independently, and a cache keyed on
+   Together AI's FLUX.2-dev (portrait-framed, to give a standing
+   figure room to fit head-to-toe) along with that character's cached reference image for consistency, then background-removed and
+   deterministically converted to monochrome. A cache keyed on
    `(character, action, orientation, angle)` means a pose already generated
    anywhere in the project is never paid for twice; backgrounds are cached
    separately on `(setting, shot_size, angle)`. Finished character cutouts
@@ -165,11 +134,7 @@ all validated against a strict schema rather than trusted as free text.
   budget (native structured outputs avoid unreliable free-text JSON
   parsing, and Haiku 4.5's pricing keeps this well under £5/month at
   expected usage)
-- **Together AI** (Stable Diffusion XL) for image generation — chosen as
-  the cheapest verified option at the scale a full screenplay needs, after
-  checking Bedrock's own image models (Titan/Nova Canvas, both inactive on
-  this account) and fal.ai's FLUX.1 Schnell (same price class but
-  meaningfully more expensive per image).
+- **Together AI** (FLUX.2-dev) for all image generation, both characters and backgrounds. This was chosen as it allows image-conditioned prompts -- an important feature to ensure character consistency across shots. It is also fairly cheap to run ($0.0154/image).
 - **Pillow**, plus an isnet-anime-based background removal model, for
   turning a raw generation into a clean, background-free, monochrome cutout
 - **pytest**, split into a fast/free **unit** tier (fake LLM/image calls,
