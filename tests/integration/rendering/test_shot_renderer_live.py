@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 
 from taleboard.rendering import together_caller
-from taleboard.rendering.shot_renderer import CutoutCache, render_shot
-from taleboard.schema.enums import Orientation, PositionCell, SizeInFrame
-from taleboard.schema.models import Character, Region
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, render_characters, render_shot
+from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
+from taleboard.schema.models import Character, Region, Shot
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -63,7 +63,7 @@ def test_render_shot_end_to_end_and_cache_reuse_against_real_services():
     regions = _test_regions()
     cache: CutoutCache = {}
 
-    first_result = render_shot(
+    first_result = render_characters(
         regions=regions,
         characters=characters,
         cache=cache,
@@ -75,11 +75,115 @@ def test_render_shot_end_to_end_and_cache_reuse_against_real_services():
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "composited_shot.png").write_bytes(first_result)
 
-    second_result = render_shot(
+    second_result = render_characters(
         regions=regions,
         characters=characters,
         cache=cache,
         generate_image=counting_generate,
     )
     assert call_count == 2 #unchanged: both regions reused from cache
+    assert second_result == first_result
+
+@pytest.mark.integration
+def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_services(monkeypatch):
+    """A regionless Shot's entire output is a background render -- the
+    actual case this exists for is an establishing shot or an object
+    insert, nothing to composite. WIDE/LOW are deliberately not the
+    defaults, so this also confirms shot_size/angle actually reach
+    build_background_prompt for real, not just against fakes.
+    """
+    call_count = 0
+    real_generate_background = together_caller.generate_background_image
+ 
+    def counting_generate_background(text: str, negative_text: str) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        return real_generate_background(text, negative_text)
+
+    monkeypatch.setattr(together_caller, "generate_background_image", counting_generate_background)
+
+    shot = Shot(
+        description="An empty alley at night.",
+        setting="a narrow city alley at night, wet cobblestones, a single flickering streetlamp",
+        regions=[],
+        paragraph_index=0,
+        shot_size=ShotSize.WIDE,
+        angle=CameraAngle.LOW,
+        duration_s=2.0,
+    )
+    background_cache: BackgroundCache = {}
+ 
+    first_result = render_shot(
+        shot=shot,
+        characters={},
+        character_cache={},
+        background_cache=background_cache,
+    )
+    assert len(first_result) > 0
+    assert call_count == 1  # one background render, no character calls at all
+ 
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    (OUTPUT_DIR / "background_only_shot.png").write_bytes(first_result)
+ 
+    second_result = render_shot(
+        shot=shot,
+        characters={},
+        character_cache={},
+        background_cache=background_cache,
+    )
+    assert call_count == 1  # unchanged: reused from the background cache
+    assert second_result == first_result
+
+@pytest.mark.integration
+def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(monkeypatch):
+    """A shot with regions, driven through render_shot (not render_characters directly), should come back as real characters composited over a real rendered background."""
+    call_count = 0
+    real_generate_character = together_caller.generate_character_image
+    real_generate_background = together_caller.generate_background_image
+ 
+    def counting_generate_character(text: str, negative_text: str) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        return real_generate_character(text, negative_text)
+ 
+    def counting_generate_background(text: str, negative_text: str) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        return real_generate_background(text, negative_text)
+
+    monkeypatch.setattr(together_caller, "generate_character_image", counting_generate_character)
+    monkeypatch.setattr(together_caller, "generate_background_image", counting_generate_background)
+ 
+    shot = Shot(
+        description="Alice and Bob talking in a dim hallway.",
+        setting="a dim narrow hallway with peeling wallpaper and a single overhead bulb",
+        regions=_test_regions(),
+        paragraph_index=0,
+        shot_size=ShotSize.MEDIUM,
+        angle=CameraAngle.EYE_LEVEL,
+        duration_s=2.0,
+    )
+    characters = _test_characters()
+    character_cache: CutoutCache = {}
+    background_cache: BackgroundCache = {}
+ 
+    first_result = render_shot(
+        shot=shot,
+        characters=characters,
+        character_cache=character_cache,
+        background_cache=background_cache,
+    )
+    assert len(first_result) > 0
+    assert call_count == 3  #one background + one per distinct character_id
+ 
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    (OUTPUT_DIR / "composited_shot_with_background.png").write_bytes(first_result)
+ 
+    second_result = render_shot(
+        shot=shot,
+        characters=characters,
+        character_cache=character_cache,
+        background_cache=background_cache,
+    )
+    assert call_count == 3
     assert second_result == first_result

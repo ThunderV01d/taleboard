@@ -27,6 +27,7 @@ class LLMShotDraft(BaseModel):
     """Represents a single shot to be generated."""
     model_config = ConfigDict(extra="forbid")
     description: str
+    setting: str = Field(max_length=300)
     shot_size: ShotSize
     angle: CameraAngle
     duration_s: float = Field(gt=0,le=60)
@@ -55,6 +56,7 @@ def build_shot_draft_model(cast_ids: list[str]) -> type[BaseModel]:
     class ConstrainedShotDraft(BaseModel):
         model_config = ConfigDict(extra="forbid")
         description: str
+        setting: str = Field(max_length=300)
         shot_size: ShotSize
         angle: CameraAngle
         duration_s: float

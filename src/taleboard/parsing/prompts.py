@@ -28,22 +28,13 @@ def build_cast_extraction_prompt(story_text: str) -> str:
 SHOT_BREAKDOWN_INSTRUCTIONS = """\
 You are breaking one paragraph of a story into storyboard shots.
  
-A shot is one visual beat — one moment, framing, and arrangement of
-characters that a single storyboard panel could show. Most paragraphs are
-a single shot. Only split a paragraph into more than one shot when it
-genuinely contains multiple distinct visual moments — for example, a
-character crossing a room and then turning to face someone is two shots;
-a character simply speaking a line while standing still is one.
+A shot is one visual beat — one moment, framing, and arrangement of characters that a single storyboard panel could show. Most paragraphs are a single shot. Only split a paragraph into more than one shot when it genuinely contains multiple distinct visual moments — for example, a character crossing a room and then turning to face someone is two shots; a character simply speaking a line while standing still is one.
+
+You are given the fixed cast of this story below, each with an id, name, and appearance. You may only reference characters from this list by their id. If the paragraph describes someone not in this list (an unnamed extra, a stranger, a crowd), do not create a region for them at all — leave them out rather than inventing an id for them; mention them in the setting description instead if they're part of what the shot looks like (e.g. a busy marketplace crowded with unnamed vendors). Character orientations should reflect their actions and interactions in the paragraph — do not assume they all face towards the camera.
  
-You are given the fixed cast of this story below, each with an id, name,
-and appearance. You may only reference characters from this list by their
-id. If the paragraph describes someone not in this list (an unnamed
-extra, a stranger, a crowd), do not create a region for them at all —
-leave them out rather than inventing an id for them. Character orientations should reflect their actions and interactions in the paragraph — do not assume they all face towards the camera.
- 
-You are also given the last shot from the previous paragraph, if any, for
-continuity. Keep a character's position and orientation similar to their
-last known position unless the text describes them moving. You must also keep the position and orientation of characters consistent across shots in the same paragraph, unless the text describes them moving.
+Every shot needs a setting — a short description of the location and environment it takes place in. Not every shot needs a character: a beat that's really about a place or an object (an establishing shot, a close-up on something in the scene) should have an empty regions list rather than forcing a character into it. A setting can be as plain and empty as the story implies ("an empty hallway") or as populated with unnamed figures as it implies ("a crowded train platform") — neither is a region, both just belong in the setting text.
+
+You are also given the last shot from the previous paragraph, if any, for continuity. Keep a character's position and orientation similar to their last known position unless the text describes them moving. You must also keep the position and orientation of characters consistent across shots in the same paragraph, unless the text describes them moving. The same applies to setting: keep it the same as the previous shot unless the text signals the location has changed.
 """
 
 def build_shot_breakdown_prompt(

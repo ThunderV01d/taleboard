@@ -25,6 +25,7 @@ class Region(BaseModel):
 class Shot(BaseModel):
     """One storyboard panel."""
     description: str
+    setting: str
     regions: list[Region]
     paragraph_index: int  #which paragraph of the story this shot came from
     shot_size: ShotSize

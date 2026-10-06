@@ -5,7 +5,7 @@ from PIL import Image
 
 from taleboard.rendering.compositor import compose_shot
 from taleboard.rendering.layout import CANVAS_SIZE
-from taleboard.schema.enums import Orientation, PositionCell, SizeInFrame
+from taleboard.schema.enums import Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Region
 
 
@@ -108,3 +108,73 @@ def test_paste_order_is_independent_of_input_list_order():
 
     point = (CANVAS_SIZE // 2, CANVAS_SIZE // 3)
     assert _pixel(result_forward, *point) == _pixel(result_reversed, *point) == (255, 0, 0)
+
+def test_shot_size_defaults_to_medium_and_leaves_old_output_unchanged():
+    region = _region("alice", PositionCell.MID_CENTER)
+    cutouts = {"alice": _solid_cutout(RED)}
+ 
+    with_default = compose_shot(regions=[region], cutouts=cutouts)
+    with_explicit_medium = compose_shot(regions=[region], cutouts=cutouts, shot_size=ShotSize.MEDIUM)
+ 
+    assert with_default == with_explicit_medium
+ 
+ 
+def test_close_up_shot_size_makes_the_same_region_visibly_bigger():
+    """A close-up shot should make a character appear bigger on the
+    canvas than the same region would in a wide shot."""
+    region = _region("alice", PositionCell.MID_CENTER)
+    cutouts = {"alice": _solid_cutout(RED, size=(100, 100))}
+ 
+    wide_result = compose_shot(regions=[region], cutouts=cutouts, shot_size=ShotSize.WIDE)
+    close_up_result = compose_shot(regions=[region], cutouts=cutouts, shot_size=ShotSize.CLOSE_UP)
+    probe_point = (CANVAS_SIZE // 2, 200)
+ 
+    assert _pixel(wide_result, *probe_point) == (255, 255, 255)
+    assert _pixel(close_up_result, *probe_point) == (255, 0, 0)
+
+
+GREEN = (10, 200, 10, 255)
+ 
+ 
+def test_background_defaults_to_none_and_keeps_the_old_white_canvas():
+    with_default = compose_shot(regions=[], cutouts={})
+    with_explicit_none = compose_shot(regions=[], cutouts={}, background=None)
+ 
+    assert with_default == with_explicit_none
+    assert _pixel(with_default, 0, 0) == (255, 255, 255)
+ 
+ 
+def test_background_image_replaces_the_white_backdrop():
+    """The actual point of adding this param: it has to be used as the canvas, not just accepted and silently ignored."""
+    background = _solid_cutout(GREEN, size=(50, 50))
+ 
+    result = compose_shot(regions=[], cutouts={}, background=background)
+ 
+    assert _pixel(result, 0, 0) == GREEN[:3]
+ 
+ 
+def test_background_is_resized_to_the_full_canvas():
+    """render_background generates at the canvas's own 1:1 shape already, but compose_shot shouldn't assume that -- a background of any size should still fill the whole canvas, not get pasted at its own native size and leave the rest white."""
+    small_background = _solid_cutout(GREEN, size=(20, 20))
+ 
+    result = compose_shot(regions=[], cutouts={}, background=small_background)
+    image = Image.open(io.BytesIO(result))
+ 
+    assert image.size == (CANVAS_SIZE, CANVAS_SIZE)
+    assert _pixel(result, CANVAS_SIZE - 1, CANVAS_SIZE - 1) == GREEN[:3]
+ 
+ 
+def test_character_cutout_still_pastes_over_a_background_image():
+    background = _solid_cutout(GREEN, size=(50, 50))
+    region = _region("alice", PositionCell.MID_CENTER)
+ 
+    result = compose_shot(
+        regions=[region],
+        cutouts={"alice": _solid_cutout(RED)},
+        background=background,
+    )
+ 
+    #Inside the character's own box, the character wins.
+    assert _pixel(result, CANVAS_SIZE // 2, CANVAS_SIZE * 2 // 3 - 10) == (255, 0, 0)
+    #Outside any character's box, the background shows through -- not white.
+    assert _pixel(result, 0, 0) == GREEN[:3]

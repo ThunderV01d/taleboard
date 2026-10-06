@@ -8,6 +8,14 @@ MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 DEFAULT_GUIDANCE_SCALE = 9.0
 DEFAULT_STEPS = 35
 
+#A portrait-style aspect ratio is the most natural for a single character
+CHARACTER_WIDTH = 768
+CHARACTER_HEIGHT = 1024
+
+#A square aspect ratio is what we expect from a storyboard shot
+BACKGROUND_WIDTH = 1024
+BACKGROUND_HEIGHT = 1024
+
 
 load_dotenv()
 _client: Together | None = None
@@ -20,17 +28,16 @@ def _get_client() -> Together:
         _client = Together()  #reads TOGETHER_API_KEY from the environment
     return _client
 
-
-def generate_character_image(
-    text: str,
-    negative_text: str | None = None,
-    width: int = 1024,
-    height: int = 1024,
-    steps: int | None = DEFAULT_STEPS,
-    guidance_scale: float | None = DEFAULT_GUIDANCE_SCALE,
-    seed: int | None = None,
+def _generate_image(
+        text: str,
+        negative_text: str | None,
+        width: int,
+        height: int,
+        steps: int | None,
+        guidance_scale: float | None,
+        seed: int | None,
 ) -> bytes:
-    """Generates one image from a text prompt. Returns raw image bytes (PNG)."""
+    "Shared low-level call."
     kwargs: dict = {
         "model": MODEL_ID,
         "prompt": text,
@@ -49,4 +56,29 @@ def generate_character_image(
         kwargs["seed"] = seed
 
     response = _get_client().images.generate(**kwargs)
-    return base64.b64decode(response.data[0].b64_json)
+    return base64.b64decode(response.data[0].b64_json) 
+
+
+def generate_character_image(
+    text: str,
+    negative_text: str | None = None,
+    steps: int | None = DEFAULT_STEPS,
+    guidance_scale: float | None = DEFAULT_GUIDANCE_SCALE,
+    seed: int | None = None,
+) -> bytes:
+    """Generates one character cutout image from a text prompt. Returns raw image bytes (PNG)."""
+    return _generate_image(
+        text, negative_text, CHARACTER_WIDTH, CHARACTER_HEIGHT, steps, guidance_scale, seed
+    )
+
+def generate_background_image(
+    text: str,
+    negative_text: str | None = None,
+    steps: int | None = DEFAULT_STEPS,
+    guidance_scale: float | None = DEFAULT_GUIDANCE_SCALE,
+    seed: int | None = None,
+) -> bytes:
+    """Generates one environment/establishing image. Returns raw image bytes (PNG)."""
+    return _generate_image(
+        text, negative_text, BACKGROUND_WIDTH, BACKGROUND_HEIGHT, steps, guidance_scale, seed
+    )

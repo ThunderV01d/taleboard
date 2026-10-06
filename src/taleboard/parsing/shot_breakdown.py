@@ -95,6 +95,7 @@ def _fallback_shot(paragraph: str) -> LLMShotDraft:
     """
     return LLMShotDraft(
         description=paragraph[:200],
+        setting="unknown -- needs manual review",
         shot_size="medium",
         angle="eye_level",
         duration_s=2.0,
@@ -116,6 +117,7 @@ def to_domain_shot(result: ShotResult, paragraph_index: int) -> Shot:
     ]
     return Shot(
         description=draft.description,
+        setting = draft.setting,
         regions = regions,
         paragraph_index=paragraph_index,
         shot_size=draft.shot_size,

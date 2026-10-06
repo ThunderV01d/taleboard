@@ -5,7 +5,7 @@ Turn a story into an editable storyboard! You, the user, have control of framing
 
 **Status: in progress.** The story → shots pipeline (cast extraction and
 shot breakdown, both backed by AWS Bedrock) and image rendering (per-character
-generation, background removal, compositing, both backed by Together AI) are
+generation, background rendering, compositing, both backed by Together AI) are
 implemented and tested. The paint editor and a persisted project data model
 are not yet built. See [Status](#status) below for exactly what works today.
 
@@ -40,9 +40,24 @@ all validated against a strict schema rather than trusted as free text.
   dropped or left invalid.
 
 **Working, tested against Together AI:**
-- **Image rendering** — each character region is turned into a monochrome,
-  background-removed line-art cutout and composited onto the shot canvas at
-  the position, size, and orientation the shot breakdown specified.
+- **Character rendering** — each character region is turned into a
+  monochrome, background-removed line-art cutout and composited onto the
+  shot canvas at the position, size, and orientation the shot breakdown
+  specified. Camera angle (eye-level/low/high) is reflected in the
+  generation prompt, not just a label on the shot.
+- **Background rendering** — every shot also renders its own setting as a
+  standalone environment image (not just blank white), cached per
+  `(setting, shot_size, angle)` so shots that share a scene reuse the same
+  render. A shot with character regions composites those cutouts over this
+  rendered background rather than plain white; a shot with no regions (an
+  establishing/object-insert shot) *is* the background render, nothing to
+  composite. The only consistency mechanism between a character and its
+  background is that both prompts share the same camera-angle wording —
+  no true perspective or scale matching is attempted, by design (see Known
+  issues).
+- **Shot size affects composited scale** — a close-up, medium, or wide shot
+  size now actually changes how large a character reads on the canvas, on
+  top of each region's own relative size.
 - **LEFT/RIGHT orientation via mirroring** — a sideways-facing region is
   never generated twice. One real generation is produced for a canonical
   direction, and the opposite-facing cutout is derived by mirroring it —
@@ -50,21 +65,44 @@ all validated against a strict schema rather than trusted as free text.
   (two independent generations have no reason to agree on pose, proportions,
   or clothing folds).
 - **Partial regeneration via caching** — a generation is only ever produced
-  once per unique `(character, action, orientation)` combination; any later
-  shot reusing that exact combination (anywhere in the project, not just the
-  adjacent shot) reuses the cached cutout instead of paying for a new one.
+  once per unique `(character, action, orientation, camera angle)`
+  combination; any later shot reusing that exact combination (anywhere in
+  the project, not just the adjacent shot) reuses the cached cutout instead
+  of paying for a new one. Backgrounds are cached separately, keyed on
+  `(setting, shot_size, angle)`.
 
 **Known issues:**
-- Occasionally a generation includes an extra, unrequested person in frame.
-  When that happens, background removal (tuned for a single foreground
-  subject) can't cleanly separate the intended character from the extra one,
-  and the resulting cutout is unusable. Not yet automatically detected —
-  currently requires a manual re-render of that one cached pose.
-- Left/right orientation accuracy depends on prompt wording that's still
-  being refined — SDXL's compliance with directional ("facing left/right")
-  instructions is inherently less reliable than other attributes, and an
-  occasional wrong-direction generation is possible even with the current
-  prompt.
+- **Full-body framing is unreliable.** SDXL doesn't consistently honour
+  "full body shot, entire figure visible" from prompt text alone — a
+  square generation frame made this worse by giving a standing figure no
+  room to fit head-to-toe, so character generations now request a
+  portrait frame (768×1024, the tallest ratio Together's hosted endpoint
+  allows) instead of square. This helps but doesn't fully solve it; since
+  the compositor scales a cutout by its full height to hit a region's
+  target size, an under-framed cutout still reads as oversized relative to
+  a correctly-framed one in the same shot.
+- **Occasionally a generation includes an extra, unrequested person or
+  shadow figure in frame**, generated as part of the same image as the
+  intended character — not something background removal can clean up,
+  since it looks like one connected subject. The negative prompt now
+  explicitly discourages this ("duplicate figure, second person, twin,
+  shadow...") but it's a reduction, not a guarantee.
+- **Left/right orientation accuracy depends on prompt wording that's still
+  being refined** — SDXL's compliance with directional ("facing
+  left/right") instructions is inherently less reliable than other
+  attributes, and an occasional wrong-direction generation is possible
+  even with the current prompt.
+- **No character consistency across shots.** Each generation of a given
+  `(character, action, orientation, angle)` combination is independent —
+  nothing conditions a new generation on how that character has looked in
+  earlier shots, so the same character can drift in appearance across a
+  story.
+- **Character/background compositing has no perspective or scale
+  matching.** A character cutout and its background are two independently
+  generated images; the only thing tying them together is sharing the same
+  camera-angle wording. This was an explicit, accepted trade-off rather
+  than an oversight — true scene-consistent compositing would need real 3D
+  scene reasoning neither generation call does.
 
 **Not yet built:**
 - A persisted `Project` container tying validated shots together as an
@@ -88,11 +126,11 @@ all validated against a strict schema rather than trusted as free text.
    along with the fixed cast (so it can only reference real character
    IDs, never invent one) and the last shot from the previous paragraph
    (for position/orientation continuity). The model returns one or more
-   shots, each with a camera size/angle, duration, and a list of
-   per-character regions (a 3×3 grid position, relative size, facing
-   direction). Bedrock's native structured-output mode constrains the
-   response to this exact schema at generation time, rather than hoping
-   the model's free-text JSON happens to be well-formed.
+   shots, each with a camera size/angle, duration, a setting description,
+   and a list of per-character regions (a 3×3 grid position, relative
+   size, facing direction). Bedrock's native structured-output mode
+   constrains the response to this exact schema at generation time, rather
+   than hoping the model's free-text JSON happens to be well-formed.
 
 3. **Validation and retry** — every shot is validated individually
    (not as part of one big list), so one malformed shot doesn't invalidate
@@ -101,16 +139,22 @@ all validated against a strict schema rather than trusted as free text.
    capped number of retries, it's replaced with a safe, flagged
    placeholder shot rather than silently dropped.
 
-4. **Rendering** — each region in a shot is turned into a prompt (style,
-   orientation, and the character's own description/action), sent to
-   Together AI's Stable Diffusion XL, background-removed, and
+4. **Rendering** — a shot's setting is always rendered as a standalone
+   background first (square-framed), then, if the shot has character
+   regions, each region is turned into a prompt (style, orientation,
+   camera angle, and the character's own description/action), sent to
+   Together AI's Stable Diffusion XL (portrait-framed, to give a standing
+   figure room to fit head-to-toe), background-removed, and
    deterministically converted to monochrome. Sideways-facing regions reuse
    a single real generation via horizontal mirroring rather than generating
    both directions independently, and a cache keyed on
-   `(character, action, orientation)` means a pose already generated
-   anywhere in the project is never paid for twice. Finished cutouts are
-   scaled and pasted onto the shot canvas at the position/size the shot
-   breakdown specified.
+   `(character, action, orientation, angle)` means a pose already generated
+   anywhere in the project is never paid for twice; backgrounds are cached
+   separately on `(setting, shot_size, angle)`. Finished character cutouts
+   are scaled (by the region's size and the shot's overall shot size) and
+   composited onto the rendered background at the position the shot
+   breakdown specified. A shot with no character regions is simply its
+   background render.
 
 ## Tech stack
 
@@ -125,7 +169,7 @@ all validated against a strict schema rather than trusted as free text.
   the cheapest verified option at the scale a full screenplay needs, after
   checking Bedrock's own image models (Titan/Nova Canvas, both inactive on
   this account) and fal.ai's FLUX.1 Schnell (same price class but
-  meaningfully more expensive per image)
+  meaningfully more expensive per image).
 - **Pillow**, plus an isnet-anime-based background removal model, for
   turning a raw generation into a clean, background-free, monochrome cutout
 - **pytest**, split into a fast/free **unit** tier (fake LLM/image calls,
@@ -148,12 +192,12 @@ src/taleboard/
 │   ├── shot_breakdown.py
 │   └── bedrock_caller.py  # AWS Bedrock Converse API integration
 └── rendering/
-    ├── prompts.py          # builds SDXL prompts (style, orientation, negative) for a region
-    ├── together_caller.py  # Together AI SDXL image generation
+    ├── prompts.py          # builds SDXL prompts (style, orientation, camera angle, shot size, negative) for a character or a background
+    ├── together_caller.py  # Together AI SDXL image generation (separate character/background aspect ratios)
     ├── background_removal.py  # isnet-anime based background removal
-    ├── shot_renderer.py    # orchestrates generation, caching, mirroring, and monochrome conversion
-    ├── compositor.py       # pastes finished cutouts onto the shot canvas
-    └── layout.py           # PositionCell/SizeInFrame -> pixel geometry
+    ├── shot_renderer.py    # orchestrates character + background generation, caching, mirroring, and monochrome conversion
+    ├── compositor.py       # pastes finished character cutouts onto a shot's canvas or rendered background
+    └── layout.py           # PositionCell/SizeInFrame/ShotSize -> pixel geometry
 
 tests/
 ├── unit/parsing/           # fast, free, no AWS calls

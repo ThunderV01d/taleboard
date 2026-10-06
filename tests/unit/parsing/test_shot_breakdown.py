@@ -18,6 +18,7 @@ INVALID_SHOT_RESPONSE = json.dumps({
     "shots": [
         {
             "description": "Alice waves at a stranger.",
+            "setting": "a quiet street corner",
             "shot_size": "medium",
             "angle": "eye_level",
             "duration_s": 2.0,
@@ -38,6 +39,7 @@ VALID_SHOT_RESPONSE = json.dumps({
     "shots": [
         {
             "description": "Alice waves at Bob.",
+            "setting": "a quiet street corner",
             "shot_size": "medium",
             "angle": "eye_level",
             "duration_s": 2.0,
@@ -97,6 +99,20 @@ def test_get_shots_for_paragraph_falls_back_after_max_retries():
     assert results[0].needs_review is True
     assert results[0].shot.regions == []
 
+def test_get_shots_for_paragraph_fallback_shot_has_a_setting():
+    cast = _make_cast()
+ 
+    def fake_call_llm(prompt: str) -> str:
+        return INVALID_SHOT_RESPONSE
+ 
+    results = get_shots_for_paragraph(
+        paragraph="Alice waves.",
+        cast=cast,
+        previous_shot=None,
+        call_llm=fake_call_llm,
+    )
+ 
+    assert results[0].shot.setting  #non-empty placeholder
 
 def test_get_shots_for_paragraph_handles_unparseable_response():
     cast = _make_cast()
@@ -118,6 +134,7 @@ def test_to_domain_shot_maps_fields():
     ShotModel = build_shot_draft_model(["alice", "bob"])
     draft = ShotModel.model_validate({
         "description": "Alice waves at Bob.",
+        "setting": "a quiet street corner",
         "shot_size": "medium",
         "angle": "eye_level",
         "duration_s": 2.0,
@@ -136,6 +153,7 @@ def test_to_domain_shot_maps_fields():
     shot = to_domain_shot(result, paragraph_index=3)
 
     assert shot.description == "Alice waves at Bob."
+    assert shot.setting == "a quiet street corner"
     assert shot.paragraph_index == 3
     assert shot.needs_review is False
     assert len(shot.regions) == 1
@@ -148,6 +166,7 @@ def test_to_domain_shot_carries_needs_review_flag():
     ShotModel = build_shot_draft_model(["alice"])
     draft = ShotModel.model_validate({
         "description": "fallback",
+        "setting": "unknown -- needs manual review",
         "shot_size": "medium",
         "angle": "eye_level",
         "duration_s": 2.0,

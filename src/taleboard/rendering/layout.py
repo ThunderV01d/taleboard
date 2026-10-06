@@ -3,7 +3,7 @@ geometry for a 1024x1024 canvas.
 """
 
 from dataclasses import dataclass
-from taleboard.schema.enums import PositionCell, SizeInFrame
+from taleboard.schema.enums import PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Region
 
 CANVAS_SIZE = 1024
@@ -44,6 +44,15 @@ _SIZE_TO_HEIGHT_FRACTION: dict[SizeInFrame, float] = {
     SizeInFrame.LARGE: 0.70,
 }
 
+#ShotSize -> target height multiplier mapping
+_SHOT_SIZE_SCALE: dict[ShotSize, float] = {
+    ShotSize.CLOSE_UP: 1.35,
+    ShotSize.MEDIUM: 1.0,
+    ShotSize.WIDE: 0.7,
+}
+
+#Ceiling on combined height fraction -- cheap insurance against future code changes
+_MAX_HEIGHT_FRACTION = 0.97
 
 @dataclass(frozen=True)
 class Placement:
@@ -53,12 +62,14 @@ class Placement:
     target_height: int  #The cutout should be scaled to this height
 
 
-def resolve_placement(region: Region) -> Placement:
+def resolve_placement(region: Region, shot_size: ShotSize = ShotSize.MEDIUM) -> Placement:
     """Resolve a region's PositionCell/SizeInFrame into pixel geometry."""
     row, col = _POSITION_TO_ROW_COL[region.position]
     anchor_x = _COLUMN_X[col]
     anchor_y = _ROW_Y[row]
-    target_height = round(CANVAS_SIZE * _SIZE_TO_HEIGHT_FRACTION[region.size])
+    height_fraction = _SIZE_TO_HEIGHT_FRACTION[region.size] * _SHOT_SIZE_SCALE[shot_size]
+    height_fraction = min(height_fraction, _MAX_HEIGHT_FRACTION)
+    target_height = round(CANVAS_SIZE * height_fraction)
     return Placement(anchor_x=anchor_x, anchor_y=anchor_y, target_height=target_height)
 
 
@@ -66,11 +77,12 @@ def resolve_paste_box(
     region: Region,
     cutout_width: int,
     cutout_height: int,
+    shot_size: ShotSize = ShotSize.MEDIUM,
 ) -> tuple[int, int, int, int]:
     """Given a region and the unscaled pixel size of its cutout, return (paste_x, paste_y,scaled_width, scaled_height).
     These are the scaled dimensions the cutout should be resized to, and the top-left coordinate to paste it at so its bottom-center lands on the region's anchor point.
     """
-    placement = resolve_placement(region)
+    placement = resolve_placement(region, shot_size)
     scale = placement.target_height / cutout_height
     scaled_width = round(cutout_width * scale)
     scaled_height = placement.target_height
