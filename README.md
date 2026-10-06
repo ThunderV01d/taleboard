@@ -157,10 +157,10 @@ src/taleboard/
 │   ├── shot_breakdown.py
 │   └── bedrock_caller.py  # AWS Bedrock Converse API integration
 └── rendering/
-    ├── prompts.py          # builds SDXL prompts (style, orientation, camera angle, shot size, negative) for a character or a background
-    ├── together_caller.py  # Together AI SDXL image generation (separate character/background aspect ratios)
+    ├── prompts.py          # builds FLUX prompts (style, orientation, camera angle, shot size) for a character or a background
+    ├── together_caller.py  # Together AI FLUX.2-dev image generation (separate character/background aspect ratios, reference-image conditioning)
     ├── background_removal.py  # isnet-anime based background removal
-    ├── shot_renderer.py    # orchestrates character + background generation, caching, mirroring, and monochrome conversion
+    ├── shot_renderer.py    # orchestrates reference images, character + background generation, caching, and monochrome conversion
     ├── compositor.py       # pastes finished character cutouts onto a shot's canvas or rendered background
     └── layout.py           # PositionCell/SizeInFrame/ShotSize -> pixel geometry
 
