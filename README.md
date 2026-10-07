@@ -6,17 +6,14 @@ Turn a story into an editable storyboard! You, the user, have control of framing
 **Status: in progress.** The story → shots pipeline (cast extraction and
 shot breakdown, both backed by AWS Bedrock) and image rendering (per-character
 generation, background rendering, compositing, both backed by Together AI) are
-implemented and tested. The paint editor and a persisted project data model
-are not yet built. See [Status](#status) below for exactly what works today.
+implemented and tested. The canvas editor and a persisted project data model are not yet built. See [Status](#status) below for exactly what works today.
 
 ## What this is
 
 Most "AI storyboard" tools hand you a finished image and hope it's right.
 TaleBoard is built around a different idea: the model's job is to propose
 a starting point (who's in a shot, where they're positioned,
-how they're framed), not to be the final word on it. The user can paint
-directly onto a shot to fix a character's position, and only that shot
-gets thrown away and regenerated, keeping everything else untouched.
+how they're framed), not to be the final word on it. Each shot becomes a stack of editable layers: the background and each character cutout can be moved, resized, flipped, or skewed directly on the canvas, so fixing the blocking is free and instant. A generation is only redone when the user explicitly asks for it, one layer at a time, and it keeps that layer's placement.
 
 A story is broken into paragraphs, each paragraph into one or more shots,
 and each shot into per-character regions (position, size, orientation) —
@@ -62,7 +59,7 @@ all validated against a strict schema rather than trusted as free text.
   conditioned on it through FLUX.2's `reference_images` input, so a
   character keeps the same look across different shots and poses.
 - **Direct LEFT/RIGHT orientation** — FLUX.2-dev follows directional prompts reliably, so every orientation is its own real generation (with its own cache entry).
-- **Partial regeneration via caching** — a generation is only ever produced
+- **No duplicate generations via caching** — a generation is only ever produced
   once per unique `(character, action, orientation, camera angle)`
   combination; any later shot reusing that exact combination (anywhere in
   the project, not just the adjacent shot) reuses the cached cutout instead
@@ -71,17 +68,52 @@ all validated against a strict schema rather than trusted as free text.
   Each character's reference image is cached once for the whole project.
 
 **Known issues:**
-- **Camera angle-prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)
+- **Camera angle prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)
 
-- **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight — true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point.
+- **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight — true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point. This can be mitigated to some extent using the editor's skew control -- a cutout can be nudged towards a background's vanishing point when it's visibly off.
 
 **Not yet built:**
 - A persisted `Project` container tying validated shots together as an
   ordered, editable whole (the domain pieces individual shots are built
   from — `Character`, `Region` — exist and are used directly by rendering;
   the project-level container around them doesn't yet).
-- The paint-to-regenerate editor.
-- Deployment (S3/CloudFront frontend, Lambda API + worker, SQS, DynamoDB).
+- The canvas editor (see [Planned: Canvas Editor](#planned-canvas-editor)).
+- Deployment (S3/CloudFront frontend, Lambda API + worker, SQS, DynamoDB, S3 storage for generated/uploaded images).
+
+## Planned: Canvas Editor
+
+Each shot will be a persistent **layer graph** rather than a single
+flattened image, so editing or regenerating one layer never disturbs the
+rest. Layers stack bottom-to-top:
+
+| Layer | Contents |
+|---|---|
+| `background` | FLUX-generated environment render |
+| `character` | FLUX-generated cutout, one per character region |
+| `freehand` | user drawing, stored as **vector strokes** (points, colour, width) so individual strokes stay editable, and rasterized only at composite/export time |
+| `image` | a user-uploaded image |
+| `group` | a nested container whose transform and opacity apply to its children |
+
+Every layer, groups included, has an affine transform (position, scale,
+rotation, skew), opacity, visibility, and a name. That one transform
+covers move/resize/flip/skew uniformly. The compositor will walk this tree,
+applying group transforms and opacity hierarchically, and flatten it to one
+image for preview and export.
+
+**Regeneration** applies only to generated layers (`background`,
+`character`). It replaces just that layer's source image and keeps the
+transform, opacity, group membership, and stack position. Each generated
+layer stores its own generation parameters, so it is regenerated from a
+comparable prompt, still conditioned on the character's reference image.
+
+**Storage** is hybrid. Layer images are S3 object keys, cached under the
+same keys the renderer already uses in memory, and served to the frontend
+through presigned URLs so image bytes never pass through the API.
+Transforms, metadata, and freehand strokes stay inline in the shot JSON.
+This keeps shot documents small, stays within Lambda payload limits, and
+costs next to nothing at this scale. The trade-off is lifecycle cleanup:
+old objects have to be removed when a layer is regenerated or a shot is
+deleted.
 
 ## How it works
 
