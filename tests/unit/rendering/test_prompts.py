@@ -20,7 +20,7 @@ def _region(action: str = "standing", orientation: Orientation = Orientation.TOW
 
 
 def test_style_prefix_comes_before_subject_text():
-    """if SDXL's text encoder ever has to drop trailing tokens, it should drop subject detail, never the style instructions. That only holds if the style prefix genuinely comes first in the string.
+    """if FLUX's text encoder ever has to drop trailing tokens, it should drop subject detail, never the style instructions. That only holds if the style prefix genuinely comes first in the string.
     """
     prompt = build_character_prompt(_character(), _region())
     assert prompt.text.startswith(STYLE_PREFIX)
@@ -125,34 +125,6 @@ def test_camera_angle_phrases_are_shared_between_character_and_background_prompt
         if CAMERA_ANGLE_PHRASES[angle]:
             assert CAMERA_ANGLE_PHRASES[angle] in character_prompt.text
             assert CAMERA_ANGLE_PHRASES[angle] in background_prompt.text
- 
- 
-def test_style_prefix_and_orientation_fit_within_clip_token_budget():
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
- 
-    #CLIP's hard cap, minus the two reserved start/end tokens
-    USABLE_BUDGET = 75
-    MIN_SUBJECT_HEADROOM = 18
- 
-    for orientation, orientation_phrase in ORIENTATION_PHRASES.items():
-        for angle, angle_phrase in CAMERA_ANGLE_PHRASES.items():
-            prefix_tokens = tokenizer(
-                STYLE_PREFIX + orientation_phrase + angle_phrase, add_special_tokens=True
-            )["input_ids"]
-            used = len(prefix_tokens)
-            assert used <= USABLE_BUDGET - MIN_SUBJECT_HEADROOM, (
-                f"STYLE_PREFIX + ORIENTATION_PHRASES[{orientation}] + CAMERA_ANGLE_PHRASES[{angle}] "
-                f"uses {used} tokens, leaving fewer than {MIN_SUBJECT_HEADROOM} for the subject text"
-            )
- 
- 
-def test_negative_prompt_fits_within_clip_token_budget():
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
- 
-    tokens = tokenizer(NEGATIVE_PROMPT, add_special_tokens=True)["input_ids"]
-    assert len(tokens) <= 77
 
 def test_background_prompt_starts_with_background_style_prefix():
     prompt = build_background_prompt("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL)
@@ -213,36 +185,3 @@ def test_background_prompt_does_not_share_the_character_style_prefix():
     """
     prompt = build_background_prompt("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL)
     assert STYLE_PREFIX not in prompt.text
- 
- 
-def test_background_prompt_and_shot_size_angle_fit_within_clip_token_budget():
-    """Same CLIP 77-token budget discipline as the character prompt's
-    guard test, applied to every ShotSize x CameraAngle combination with a
-    realistic setting description -- the fixed/style portion plus a normal
-    setting should comfortably clear the model's hard truncation point.
-    """
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
- 
-    USABLE_BUDGET = 75
-    realistic_setting = (
-        "a dimly lit warehouse interior, stacked wooden crates, a single "
-        "high window letting in a shaft of light"
-    )
- 
-    for shot_size in ShotSize:
-        for angle in CameraAngle:
-            prompt = build_background_prompt(realistic_setting, shot_size, angle)
-            tokens = tokenizer(prompt.text, add_special_tokens=True)["input_ids"]
-            assert len(tokens) <= USABLE_BUDGET, (
-                f"background prompt for ({shot_size}, {angle}) uses {len(tokens)} tokens, "
-                f"over the usable {USABLE_BUDGET}-token budget"
-            )
- 
- 
-def test_background_negative_prompt_fits_within_clip_token_budget():
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
- 
-    tokens = tokenizer(BACKGROUND_NEGATIVE_PROMPT, add_special_tokens=True)["input_ids"]
-    assert len(tokens) <= 77

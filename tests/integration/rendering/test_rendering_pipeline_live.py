@@ -31,7 +31,7 @@ def _test_region() -> Region:
 def test_generation_and_background_removal_against_real_services():
     """One real generation call, reused for both checks: that the
     Together API call works end-to-end, and that rembg can isolate the
-    subject from whatever SDXL actually produced. Writes both images to
+    subject from whatever FLUX actually produced. Writes both images to
     output/ for visual inspection -- that's the real point of this test.
     """
     prompt = build_character_prompt(_test_character(), _test_region())
