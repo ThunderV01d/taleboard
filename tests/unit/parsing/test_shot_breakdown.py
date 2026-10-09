@@ -159,8 +159,6 @@ def test_to_domain_shot_maps_fields():
     assert len(shot.regions) == 1
     assert shot.regions[0].character_id == "alice"
     assert shot.regions[0].action == "waving"
-    assert shot.regions[0].image_file is None
-
 
 def test_to_domain_shot_carries_needs_review_flag():
     ShotModel = build_shot_draft_model(["alice"])
@@ -178,3 +176,20 @@ def test_to_domain_shot_carries_needs_review_flag():
 
     assert shot.needs_review is True
     assert shot.regions == []
+
+def test_breakdown_prompt_lists_each_cast_members_aliases():
+    from taleboard.parsing.prompts import build_shot_breakdown_prompt
+    cast = {"elias_brandt": LLMCharacterDraft(name="Elias Brandt", description="A bearded old man.",
+                                              aliases=["Brandt", "the harbourmaster"])}
+
+    prompt = build_shot_breakdown_prompt("The harbourmaster frowned.", cast, previous_shot=None)
+
+    assert "id: elias_brandt" in prompt
+    assert "also called: Brandt, the harbourmaster" in prompt
+
+
+def test_aliases_are_required_for_the_llm_but_optional_in_python():
+    from taleboard.parsing.llm_schemas import LLMCastOutput
+    schema = LLMCastOutput.model_json_schema()
+    assert "aliases" in schema["$defs"]["LLMCharacterDraft"]["required"]
+    assert LLMCharacterDraft(name="Alice", description="...").aliases == []

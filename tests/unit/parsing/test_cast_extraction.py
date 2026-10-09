@@ -1,4 +1,5 @@
-from taleboard.parsing.cast_extraction import assign_char_ids, to_domain_character
+import pytest
+from taleboard.parsing.cast_extraction import assign_char_ids, to_domain_character, extract_cast
 from taleboard.parsing.llm_schemas import LLMCharacterDraft
 
 def test_assign_char_ids_no_duplicates():
@@ -43,14 +44,21 @@ def test_assign_char_ids_empty_list():
 
 def test_to_domain_character_maps_fields():
     draft = LLMCharacterDraft(name="Alice", description="A woman with red hair.")
-    character = to_domain_character(draft, colour="#ff0000", appearance_reference="alice_ref.png")
+    character = to_domain_character(draft, appearance_reference="alice_ref.png")
     assert character.name == "Alice"
     assert character.description == "A woman with red hair."
-    assert character.colour == "#ff0000"
     assert character.appearance_reference == "alice_ref.png"
 
 
 def test_to_domain_character_defaults_appearance_reference_to_none():
     draft = LLMCharacterDraft(name="Bob", description="A man with a beard.")
-    character = to_domain_character(draft, colour="#0000ff")
+    character = to_domain_character(draft)
     assert character.appearance_reference is None
+
+@pytest.mark.parametrize("story", ["", "   \n\n  \n"])
+def test_extract_cast_rejects_empty_story_before_calling_the_llm(story):
+      def call_llm(prompt: str) -> str:
+          raise AssertionError("the LLM must not be called for an empty story")
+
+      with pytest.raises(ValueError, match="empty"):
+          extract_cast(story, call_llm)

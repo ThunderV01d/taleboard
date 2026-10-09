@@ -3,10 +3,12 @@
 
 Turn a story into an editable storyboard! You, the user, have control of framing, blocking, and pacing.
 
-**Status: in progress.** The story → shots pipeline (cast extraction and
-shot breakdown, both backed by AWS Bedrock) and image rendering (per-character
-generation, background rendering, compositing, both backed by Together AI) are
-implemented and tested. The canvas editor and a persisted project data model are not yet built. See [Status](#status) below for exactly what works today.
+**Status: in progress.** The full story → storyboard pipeline works end to
+end: a raw story goes in (cast extraction and shot breakdown, backed by AWS
+Bedrock) and a sequence of rendered shots comes out (per-character generation,
+background rendering, compositing, backed by Together AI). Both halves are
+tested together, with measured cost. The canvas editor and a persisted project
+data model are not yet built. See [Status](#status) below for exactly what works today.
 
 ## What this is
 
@@ -24,7 +26,10 @@ all validated against a strict schema rather than trusted as free text.
 **Working, tested against AWS Bedrock:**
 - **Cast extraction** — reads a story, identifies named characters (and
   correctly excludes unnamed background figures), assigns each a stable,
-  collision-safe ID.
+  collision-safe ID, and records every other way the story refers to them
+  (aliases, surnames etc.) so later references resolve
+  to the right character. Descriptions are kept strictly visual, because
+  they go straight into image prompts.
 - **Shot breakdown** — splits a paragraph into one or more shots, each
   with per-character regions constrained to the real extracted cast.
   Handles multi-shot paragraphs, cross-paragraph continuity (a character's
@@ -35,6 +40,11 @@ all validated against a strict schema rather than trusted as free text.
   validation error fed back to the model; anything still invalid after
   retries is replaced with a flagged, safe fallback rather than silently
   dropped or left invalid.
+- **Whole-story breakdown** — `break_down_story()` splits a story into
+  paragraphs, extracts the cast once, and breaks each paragraph down in
+  order, passing each one the previous paragraph's last shot for continuity.
+  An empty story is rejected with a clear error before any paid API call.
+
 
 **Working, tested against Together AI:**
 - **Character rendering** — each character region is turned into a
@@ -66,11 +76,27 @@ all validated against a strict schema rather than trusted as free text.
   of paying for a new one. Backgrounds are cached separately, keyed on
   `(setting, shot_size, angle)`.
   Each character's reference image is cached once for the whole project.
+- **Cutout validation** — a cutout that background removal leaves (nearly)
+  empty is never cached. It is regenerated once, and if it still fails, that
+  character is left out of the shot and the shot is flagged `needs_review`
+  rather than silently rendering an invisible character.
+- **Transient error handling** — FLUX.2-dev occasionally returns spurious
+  400 errors that succeed on an identical retry; these are retried
+  automatically, on top of the SDK's own rate-limit/server-error retries.
+- **Tested end to end** — an integration test runs a real 8-paragraph story
+  through the whole pipeline with nothing hand-built in between, checking
+  alias resolution, character presence per paragraph, one reference image
+  per character, and that every shot renders. A run costs about **$0.50**
+  (~30 FLUX images plus ~9 Bedrock calls, ~95% of it image generation),
+  so roughly a dozen stories of that length a month fit the £5 budget.
 
 **Known issues:**
-- **Camera angle prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)
-
+- **Camera angle prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)s
 - **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight — true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point. This can be mitigated to some extent using the editor's skew control -- a cutout can be nudged towards a background's vanishing point when it's visibly off.
+- **Scene details occasionally leak into character cutouts.** Each character is generated alone on a blank background from their action text. When that text implies a large prop or a place ("gripping the tiller of a boat"), FLUX draws it too, and background removal leaves it as a faint box behind the character. The breakdown prompt asks for pose-only actions, which makes this rare but doesn't eliminate it.
+- **Close-ups can crop a character's head.** Close-up scaling uses the same anchoring as wider shots, so the top of a full-body cutout can fall outside the frame. Nothing is lost (the full cutout is kept), so the canvas editor will let the user simply reposition it.
+- **The same location can look different across shots** when its setting text is reworded. There is no location-identity mechanism yet, the equivalent of reference images for characters.
+- **Camera variety is limited.** Shots lean heavily towards medium, eye-level framing, even with the breakdown prompt asking for variety.
 
 **Not yet built:**
 - A persisted `Project` container tying validated shots together as an
@@ -117,45 +143,16 @@ deleted.
 
 ## How it works
 
-1. **Cast extraction** — the story text is sent to Claude Haiku 4.5 (via
-   Bedrock) with a prompt asking it to identify named characters and give
-   each a short, visual (not personality/backstory) description. The
-   response is validated against a Pydantic schema, then each character is
-   assigned a unique, slugified ID (`alice`, `sam_1`/`sam_2` for
-   duplicate names, with a collision-safety net for edge cases like a
-   duplicated "Sam" sharing a cast with literally-named "Sam 1"/"Sam 2").
+0. **Orchestration** — `break_down_story()` drives steps 1–3: it splits the story into paragraphs, runs cast extraction once, then breaks each paragraph down in order.
 
-2. **Shot breakdown** — each paragraph is sent to the model one at a time,
-   along with the fixed cast (so it can only reference real character
-   IDs, never invent one) and the last shot from the previous paragraph
-   (for position/orientation continuity). The model returns one or more
-   shots, each with a camera size/angle, duration, a setting description,
-   and a list of per-character regions (a 3×3 grid position, relative
-   size, facing direction). Bedrock's native structured-output mode
-   constrains the response to this exact schema at generation time, rather
-   than hoping the model's free-text JSON happens to be well-formed.
+1. **Cast extraction** — the story text is sent to Claude Haiku 4.5 (via Bedrock) with a prompt asking it to identify named characters and give each a short, visual (not personality/backstory) description plus a list of aliases (other names, titles, or roles the story uses for them). The response is validated against a Pydantic schema, then each character is assigned a unique, slugified ID (`alice`, `sam_1`/`sam_2` for duplicate names, with a collision-safety net for edge cases like a duplicated "Sam" sharing a cast with literally-named "Sam 1"/"Sam 2").
 
-3. **Validation and retry** — every shot is validated individually
-   (not as part of one big list), so one malformed shot doesn't invalidate
-   an entire paragraph's worth of otherwise-good output. A failing shot is
-   retried with its specific Pydantic error fed back to the model; after a
-   capped number of retries, it's replaced with a safe, flagged
-   placeholder shot rather than silently dropped.
+2. **Shot breakdown** — each paragraph is sent to the model one at a time, along with the fixed cast (so it can only reference real character IDs, never invent one) alongside their aliases and the last shot from the previous paragraph (for position/orientation continuity). The model returns one or more shots, each with a camera size/angle, duration, a setting description, and a list of per-character regions (a 3×3 grid position, relative size, facing direction). Bedrock's native structured-output mode constrains the response to this exact schema at generation time, rather than hoping the model's free-text JSON happens to be well-formed. Each region's action describes only pose, gesture, and expression, because it's used to draw that character alone on a blank background.
 
-4. **Rendering** — a shot's setting is always rendered as a standalone
-   background first (square-framed), then, if the shot has character
-   regions, each region is turned into a prompt (style, orientation,
-   camera angle, and the character's own description/action), sent to
-   Together AI's FLUX.2-dev (portrait-framed, to give a standing
-   figure room to fit head-to-toe) along with that character's cached reference image for consistency, then background-removed and
-   deterministically converted to monochrome. A cache keyed on
-   `(character, action, orientation, angle)` means a pose already generated
-   anywhere in the project is never paid for twice; backgrounds are cached
-   separately on `(setting, shot_size, angle)`. Finished character cutouts
-   are scaled (by the region's size and the shot's overall shot size) and
-   composited onto the rendered background at the position the shot
-   breakdown specified. A shot with no character regions is simply its
-   background render.
+
+3. **Validation and retry** — every shot is validated individually (not as part of one big list), so one malformed shot doesn't invalidate an entire paragraph's worth of otherwise-good output. A failing shot is retried with its specific Pydantic error fed back to the model; after a capped number of retries, it's replaced with a safe, flagged placeholder shot rather than silently dropped.
+
+4. **Rendering** — a shot's setting is always rendered as a standalone background first (square-framed), then, if the shot has character regions, each region is turned into a prompt (style, orientation, camera angle, and the character's own description/action), sent to Together AI's FLUX.2-dev (portrait-framed, to give a standing figure room to fit head-to-toe) along with that character's cached reference image for consistency, then background-removed, checked for an empty result (regenerated once, else left out and flagged), and deterministically converted to monochrome. A cache keyed on `(character, action, orientation, angle)` means a pose already generated anywhere in the project is never paid for twice; backgrounds are cached separately on `(setting, shot_size, angle)`. Finished character cutouts are scaled (by the region's size and the shot's overall shot size) and composited onto the rendered background at the position the shot breakdown specified. A shot with no character regions is simply its background render.
 
 ## Tech stack
 
@@ -167,7 +164,7 @@ deleted.
   parsing, and Haiku 4.5's pricing keeps this well under £5/month at
   expected usage)
 - **Together AI** (FLUX.2-dev) for all image generation, both characters and backgrounds. This was chosen as it allows image-conditioned prompts -- an important feature to ensure character consistency across shots. It is also fairly cheap to run ($0.0154/image).
-- **Pillow**, plus an isnet-anime-based background removal model, for
+- **Pillow**, plus an isnet-anime-based background removal model (rembg, run on CPU), for
   turning a raw generation into a clean, background-free, monochrome cutout
 - **pytest**, split into a fast/free **unit** tier (fake LLM/image calls,
   mocked `boto3`, runs in under a second) and a slower, real-cost
@@ -187,6 +184,7 @@ src/taleboard/
 │   ├── prompts.py         # prompt templates for cast extraction and shot breakdown
 │   ├── cast_extraction.py
 │   ├── shot_breakdown.py
+│   ├── story_breakdown.py # whole story -> cast + ordered shots (top-level parsing entry point)
 │   └── bedrock_caller.py  # AWS Bedrock Converse API integration
 └── rendering/
     ├── prompts.py          # builds FLUX prompts (style, orientation, camera angle, shot size) for a character or a background
@@ -201,6 +199,7 @@ tests/
 ├── unit/rendering/         # fast, free, no Together AI calls
 ├── integration/parsing/    # real Bedrock calls — costs money, needs credentials
 └── integration/rendering/  # real Together AI calls — costs money, needs an API key
+├── integration/test_story_to_render_live.py  # full story -> rendered shots, with cost logging
 ```
 
 ## Running it
@@ -214,4 +213,6 @@ for image generation.
 pip install -e .
 python -m pytest -m "not integration"   # fast, free
 python -m pytest -m integration         # real Bedrock + Together AI calls
+python -m pytest tests/integration/test_story_to_render_live.py -m integration -s   # full pipeline, ~$0.50 per run
 ```
+Output (rendered shots, shots.json, run_log.json with costs, and a contact sheet) is written to tests/integration/output/e2e/, which is git-ignored.

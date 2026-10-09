@@ -13,13 +13,11 @@ def _test_characters() -> dict[str, Character]:
     return {
         "alice": Character(
             name="Alice",
-            description="A young woman with short red hair, wearing a green coat.",
-            colour="#ff0000",
+            description="A young woman with short red hair, wearing a green coat."
         ),
         "bob": Character(
             name="Bob",
-            description="A tall man with a beard, wearing a jacket.",
-            colour="#0000ff",
+            description="A tall man with a beard, wearing a jacket."
         ),
     }
 

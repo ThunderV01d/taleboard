@@ -48,17 +48,18 @@ def extract_cast(
     call_llm: CallLLM
 ) -> dict[str, LLMCharacterDraft]:
     """Extracts a cast of characters from the story."""
+    if not story_text.strip():
+        raise ValueError("Story is empty -- there is nothing to extract a cast from.")
     prompt = build_cast_extraction_prompt(story_text)
     response_text = call_llm(prompt)
     data = json.loads(response_text)
     output = LLMCastOutput.model_validate(data)
     return assign_char_ids(output.characters)
 
-def to_domain_character(draft: LLMCharacterDraft, colour: str, appearance_reference: str | None = None) -> Character:
-    "Converts an LLMCharacterDraft to a domain Character, adding the colour and optional appearance reference."
+def to_domain_character(draft: LLMCharacterDraft, appearance_reference: str | None = None) -> Character:
+    "Converts an LLMCharacterDraft to a domain Character, adding the optional appearance reference."
     return Character(
         name=draft.name,
         description=draft.description,
-        colour=colour,
         appearance_reference=appearance_reference
     )

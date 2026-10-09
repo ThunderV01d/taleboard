@@ -6,7 +6,7 @@ dependencies = [
     "pydantic>=2",
     "boto3",
     "together",
-    "rembg[gpu]",
+    "rembg[cpu]",
     "python-dotenv",
 ]
 

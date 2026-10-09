@@ -12,11 +12,17 @@ class LLMRegion(BaseModel):
     orientation: Orientation
     action: str = Field(max_length=200)
 
+def _require_aliases(schema: dict) -> None:
+    schema.setdefault("required", []).append("aliases")
+
 class LLMCharacterDraft(BaseModel):
     """Represents a character to be generated."""
-    model_config = ConfigDict(extra="forbid")
+    #aliases is required in the JSON schema sent to the LLM (so it's always filled in), but defaults to [] in Python.
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_require_aliases)
     name: str
     description: str = Field(max_length=300)
+    aliases: list[str] = Field(default_factory=list)  #other ways the story refers to this character
+
 
 class LLMCastOutput(BaseModel):
     """Represents the entire cast of characters to be generated."""
@@ -40,6 +46,8 @@ class LLMParagraphOutput(BaseModel):
 
 def build_region_model(cast_ids: list[str]) -> type[BaseModel]:
     """Builds a version of LLMRegion whose character_id can only be one of the given cast_ids at runtime."""
+    if not cast_ids:
+        raise ValueError("Cast is empty -- shot breakdown needs at least one character. Stories with no characters aren't supported yet.")
     CharacterId = Literal[tuple(cast_ids)]
     class ConstrainedRegion(BaseModel):
         model_config = ConfigDict(extra="forbid")

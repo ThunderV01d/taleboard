@@ -9,8 +9,6 @@ class Character(BaseModel):
     name: str
     description: str
     appearance_reference: str | None = None  #path/URL to a reference image
-    colour: str  #hex colour used for this character's paint mask
-
 
 class Region(BaseModel):
     """A single character's placement within a shot."""
@@ -19,8 +17,6 @@ class Region(BaseModel):
     size: SizeInFrame
     orientation: Orientation
     action: str
-    image_file: str | None = None  #path to the user-painted mask for this region
-
 
 class Shot(BaseModel):
     """One storyboard panel."""

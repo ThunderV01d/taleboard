@@ -13,8 +13,7 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 def _test_character() -> Character:
     return Character(
         name="Test Character",
-        description="A tall man with a beard, wearing a jacket.",
-        colour="#0000ff",
+        description="A tall man with a beard, wearing a jacket."
     )
  
  

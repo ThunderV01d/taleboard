@@ -9,7 +9,7 @@ from PIL import Image
 from rembg import new_session, remove
 
 BEDROCK_MODEL_ID = "stability.stable-image-remove-background-v1:0"
-_rembg_session = new_session("isnet-anime") #Trained on illustration or line-art content
+_rembg_session = new_session("isnet-anime", providers=["CPUExecutionProvider"]) #Trained on illustration or line-art content
 
 def remove_background(image_bytes: bytes) -> bytes:
     """Isolate the subject from its background. Free, local, no network call.

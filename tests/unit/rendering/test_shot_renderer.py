@@ -5,13 +5,13 @@ from PIL import Image
 
 from taleboard.rendering import compositor
 from taleboard.rendering.prompts import CAMERA_ANGLE_PHRASES, STYLE_PREFIX
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, ReferenceImageCache, _background_cache_key, _to_monochrome, render_background, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, CutoutRejectedError, ReferenceImageCache, _background_cache_key, _opaque_fraction, _to_monochrome, render_background, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Region, Shot
 
 
 def _character(char_id: str = "alice") -> dict[str, Character]:
-    return {char_id: Character(name=char_id.title(), description="...", colour="#ff0000")}
+    return {char_id: Character(name=char_id.title(), description="...")}
 
 
 def _region(
@@ -832,3 +832,50 @@ def test_second_character_gets_its_own_reference_not_a_shared_one():
     # his own character_id) + his own pose. Nothing shared.
     assert calls["generate"] == 4
     assert set(reference_cache.keys()) == {"alice", "bob"}
+
+
+def _transparent_cutout_bytes() -> bytes:
+    """What remove_background returns when it fails to find any subject."""
+    image = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_empty_cutout_is_regenerated_and_never_cached():
+    generate_image, _, calls = _make_fakes()
+    results = iter([_fake_cutout_bytes(),          # reference: fine
+                    _transparent_cutout_bytes(),   # pose, attempt 1: background removal found nothing
+                    _fake_cutout_bytes()])         # pose, attempt 2: fine
+
+    cache: CutoutCache = {}
+    render_characters(regions=[_region()], characters=_character(), cache=cache, reference_cache={},
+                      generate_image=generate_image, remove_background=lambda raw: next(results))
+
+    assert calls["generate"] == 3  # reference + two pose attempts
+    assert all(_opaque_fraction(c) > 0 for c in cache.values())
+
+
+def test_persistently_empty_cutout_is_skipped_and_reported_not_cached():
+    generate_image, _, _ = _make_fakes()
+    cache: CutoutCache = {}
+    reference_cache: ReferenceImageCache = {}
+    rejected: list[str] = []
+
+    render_characters(regions=[_region()], characters=_character(), cache=cache, reference_cache=reference_cache,
+                      generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes(),
+                      rejected=rejected)
+
+    assert rejected == ["alice"]
+    assert cache == {}
+    assert reference_cache == {}
+
+
+def test_render_shot_flags_needs_review_when_a_character_is_left_out():
+    generate_image, _, _ = _make_fakes()
+    shot = _shot(regions=[_region()])
+
+    render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={},
+                generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes())
+
+    assert shot.needs_review is True

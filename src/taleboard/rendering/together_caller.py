@@ -1,7 +1,9 @@
 """Image generation via Together AI's Images API, using FLUX.2-dev."""
 
 import base64
-from together import Together
+import time
+import logging
+from together import Together, BadRequestError
 from dotenv import load_dotenv
 
 MODEL_ID = "black-forest-labs/FLUX.2-dev"
@@ -63,8 +65,21 @@ def _generate_image(
         kwargs["seed"] = seed
     if reference_images:
         kwargs["reference_images"] = _encode_reference_images(reference_images)
-    response = _get_client().images.generate(**kwargs)
+    response = _generate_with_retry(kwargs)
     return base64.b64decode(response.data[0].b64_json) 
+
+BAD_REQUEST_RETRIES = 2
+RETRY_BACKOFF_S = 1.0
+
+def _generate_with_retry(kwargs: dict, sleep=time.sleep):
+    for attempt in range(BAD_REQUEST_RETRIES + 1):
+        try:
+            return _get_client().images.generate(**kwargs)
+        except BadRequestError as e:
+            if attempt == BAD_REQUEST_RETRIES:
+                raise
+            logging.getLogger(__name__).warning("Together 400 (attempt %d), retrying: %s", attempt + 1, e)
+            sleep(RETRY_BACKOFF_S * (attempt + 1))
 
 
 def generate_character_image(

@@ -6,7 +6,7 @@ from taleboard.schema.models import Character, Region
 
 
 def _character(description: str = "A tall man in his 30's with a beard, wearing a jacket.") -> Character:
-    return Character(name="Bob", description=description, colour="#0000ff")
+    return Character(name="Bob", description=description)
 
 
 def _region(action: str = "standing", orientation: Orientation = Orientation.TOWARDS_CAMERA) -> Region:
