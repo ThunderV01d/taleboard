@@ -1,3 +1,11 @@
+"""
+Integration test for character generation and background removal against real Together AI.
+
+Makes one real (paid) generation call and needs a Together AI API key. Run with: pytest -m integration
+
+Attributes:
+    OUTPUT_DIR: Path - Folder the generated images are written to, for inspection by eye.
+"""
 from pathlib import Path
 
 import pytest
@@ -11,13 +19,25 @@ from taleboard.schema.models import Character, Region
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 def _test_character() -> Character:
+    """
+    Builds a bearded test character.
+
+    Returns:
+        Character - A Character object.
+    """
     return Character(
         name="Test Character",
         description="A tall man with a beard, wearing a jacket."
     )
- 
- 
+
+
 def _test_region() -> Region:
+    """
+    Builds a centred, camera-facing, standing region for the test character.
+
+    Returns:
+        Region - A Region object.
+    """
     return Region(
         character_id="test_character",
         position=PositionCell.MID_CENTER,
@@ -28,10 +48,10 @@ def _test_region() -> Region:
 
 @pytest.mark.integration
 def test_generation_and_background_removal_against_real_services():
-    """One real generation call, reused for both checks: that the
-    Together API call works end-to-end, and that rembg can isolate the
-    subject from whatever FLUX actually produced. Writes both images to
-    output/ for visual inspection -- that's the real point of this test.
+    """
+    Verifies that a real Together AI generation works, and that rembg can isolate the subject from what FLUX actually produced.
+
+    One real generation call is reused for both checks. Both images are written to output/ for inspection by eye -- that's the real point of this test.
     """
     prompt = build_character_prompt(_test_character(), _test_region())
     image_bytes = generate_character_image(

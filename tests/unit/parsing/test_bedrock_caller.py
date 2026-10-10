@@ -1,3 +1,8 @@
+"""
+Unit tests for bedrock_caller.
+
+Uses a mocked boto3 client, so no AWS calls are made and no credentials are needed.
+"""
 import json
 from unittest.mock import MagicMock, patch
 
@@ -6,6 +11,11 @@ from taleboard.parsing.llm_schemas import build_shot_draft_model
 
 
 def test_call_llm_builds_correct_request_and_parses_response():
+    """
+    Verifies that the LLM call function sends a well-formed Converse request and returns the model's text.
+
+    Checks the client construction, the model ID, the message shape and the JSON schema sent for structured output.
+    """
     ShotModel = build_shot_draft_model(["alice", "bob"])
 
     fake_client = MagicMock()
@@ -39,6 +49,11 @@ def test_call_llm_builds_correct_request_and_parses_response():
 
 
 def test_schema_has_additional_properties_false_everywhere():
+    """
+    Verifies that every object in the shot schema forbids extra fields.
+
+    Bedrock's structured output relies on "additionalProperties": false to stop the model inventing fields.
+    """
     ShotModel = build_shot_draft_model(["alice", "bob"])
     schema = ShotModel.model_json_schema()
 
@@ -49,6 +64,11 @@ def test_schema_has_additional_properties_false_everywhere():
 
 
 def test_schema_has_no_unsupported_numeric_keywords():
+    """
+    Verifies that the shot duration's range check stays out of the JSON schema.
+
+    The range is enforced by a Pydantic validator instead, as numeric keywords like "exclusiveMinimum" and "maximum" are not supported by Bedrock's structured output.
+    """
     ShotModel = build_shot_draft_model(["alice", "bob"])
     schema = ShotModel.model_json_schema()
 

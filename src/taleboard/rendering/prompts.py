@@ -1,5 +1,18 @@
-"""Builds the actual FLUX prompt for a single region's character cutout."""
+"""
+Defines the prompts used to generate the character and background images.
 
+Acts as a 'cinematographer' -- building the prompts dynamically.
+
+Attributes:
+    STYLE_PREFIX: str - Instructions for the model to adhere to a specific style guideline (in the foreground).
+    NEGATIVE_PROMPT: str - Negative prompt instructions for the model to avoid generating certain things (in the foreground). 
+    MAX_SUBJECT_LENGTH: int - Keeps the subject description from growing too long (although there is no hard maximum enforced by FLUX).
+    ORIENTATION_PHRASES: dict[Orientation,str] - Mapping between Orientation enums and natural language phrases used in the prompt.
+    CAMERA_ANGLE_PHRASES: dict[CameraAngle,str] - Mapping between CameraAngle enums and natural language phrases used in the prompt.
+    BACKGROUND_STYLE_PREFIX: str - Instructions for the model to adhere to a specific style guideline (in the background).
+    BACKGROUND_NEGATIVE_PROMPT: str - Negative prompt instructions for the model to avoid generating certain things (in the background).
+    SHOT_SIZE_PHRASES: dict[ShotSize,str] - Mapping between ShotSize enums and natural language phrases used in the prompt.
+"""
 from dataclasses import dataclass
 
 from taleboard.schema.enums import CameraAngle, Orientation, ShotSize
@@ -13,7 +26,6 @@ STYLE_PREFIX = (
  
 NEGATIVE_PROMPT = ""
 
-#This just keeps the subject description from growing too long (although there is no hard maximum enforced by FLUX)
 MAX_SUBJECT_LENGTH = 500
 
 ORIENTATION_PHRASES: dict[Orientation, str] = {
@@ -31,13 +43,35 @@ CAMERA_ANGLE_PHRASES: dict[CameraAngle, str] = {
 
 @dataclass(frozen=True)
 class RenderPrompt:
+    """
+    Dataclass used to represent the prompt.
+    
+    Attributes:
+        text: str - Prompt text.
+        negative_text: str - Negative prompt text. Used to veer the model away from generating certain things.
+    """
     text: str
     negative_text: str
 
 
 def build_character_prompt(character: Character, region: Region, angle: CameraAngle = CameraAngle.EYE_LEVEL) -> RenderPrompt:
-    """Builds the FLUX prompt for generating one region's character cutout."""
+    """
+    Builds the FLUX prompt for generating one region's character cutout.
+
+    Couples character description and region action as the "subject".
+
+    Also incorporates orientation of the character and camera angle (extrinsic factors) into the generation.
+
+    Arguments:
+        character: Character - Character being generated.
+        region: Region - Region being generated.
+        angle: CameraAngle - Camera angle to use. Defaults to EYE_LEVEL.
+
+    Returns:
+        RenderPrompt - A RenderPrompt object, representing the character prompt to be handed off to the model.
+    """
     subject = f"{character.description}, {region.action}"
+    # Safety check: technically unnecessary
     if len(subject) > MAX_SUBJECT_LENGTH:
         subject = subject[:MAX_SUBJECT_LENGTH].rstrip()
 
@@ -63,7 +97,19 @@ SHOT_SIZE_PHRASES: dict[ShotSize, str] = {
 }
 
 def build_background_prompt(setting: str, shot_size: ShotSize, angle: CameraAngle) -> RenderPrompt:
-    """Builds the FLUX prompt for a shot's background/environment render."""
+    """
+    Builds the FLUX prompt for generating a shot's background/environment.
+    
+    Incorporates the shot size and angle alongside the shot 'setting' (which is where the real background information lives).
+
+    Arguments:
+        setting: str - Setting of the shot whose background is to be generated. Arguably, the most important part of the prompt.
+        shot_size: ShotSize - Size of the shot being composited.
+        angle: CameraAngle - Camera angle to be used in the generation.
+
+    Returns:
+        RenderPrompt - A RenderPrompt object, representing the background prompt to be handed off to the model.
+    """
     size_phrase = SHOT_SIZE_PHRASES[shot_size]
     angle_phrase = CAMERA_ANGLE_PHRASES[angle]
  

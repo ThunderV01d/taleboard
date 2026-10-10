@@ -1,3 +1,13 @@
+"""
+Integration test for cast extraction against real AWS Bedrock.
+
+Makes real (paid) Bedrock calls and needs AWS credentials. Run with: pytest -m integration
+
+Attributes:
+    MODEL_ID: str - Bedrock model ID.
+    REGION: str - AWS Region.
+    STORY: str - Two-paragraph story with two named characters and one unnamed background figure (a waiter).
+"""
 import pytest
 
 from taleboard.parsing.bedrock_caller import make_bedrock_caller
@@ -20,6 +30,9 @@ him and waved. Bob looked up, smiled, and waved back.
 
 @pytest.mark.integration
 def test_extract_cast_against_real_bedrock():
+    """
+    Verifies that the real model extracts exactly the two named characters, leaving out the unnamed waiter.
+    """
     call_llm = make_bedrock_caller(
         model_id=MODEL_ID,
         schema_model=LLMCastOutput,
@@ -31,5 +44,5 @@ def test_extract_cast_against_real_bedrock():
     names = {c.name.lower() for c in cast.values()}
     assert "alice" in names
     assert "bob" in names
-    # The unnamed waiter should be left out entirely, per the prompt's instruction -- not invented as a third character.
+    # The unnamed waiter should be left out entirely, per the prompt's instruction -- not invented as a third character
     assert len(cast) == 2

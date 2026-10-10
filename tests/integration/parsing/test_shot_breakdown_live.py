@@ -1,3 +1,12 @@
+"""
+Integration tests for shot breakdown against real AWS Bedrock.
+
+Makes real (paid) Bedrock calls and needs AWS credentials. Run with: pytest -m integration
+
+Attributes:
+    MODEL_ID: str - Bedrock model ID.
+    REGION: str - AWS Region.
+"""
 import pytest
 
 from taleboard.parsing.bedrock_caller import make_bedrock_caller
@@ -10,6 +19,12 @@ REGION = "eu-west-2"
 
 
 def _make_cast() -> dict[str, LLMCharacterDraft]:
+    """
+    Builds a two-character cast (Alice and Bob), with visual descriptions.
+
+    Returns:
+        dict[str,LLMCharacterDraft] - Mapping of character IDs ("alice", "bob") to character drafts.
+    """
     drafts = [
         LLMCharacterDraft(name="Alice", description="A young woman with short red hair, wearing a green coat."),
         LLMCharacterDraft(name="Bob", description="A tall man with a beard, wearing a blue jacket."),
@@ -19,6 +34,9 @@ def _make_cast() -> dict[str, LLMCharacterDraft]:
 
 @pytest.mark.integration
 def test_get_shots_for_paragraph_against_real_bedrock():
+    """
+    Verifies that the real model breaks a paragraph into valid shots that only reference real cast members.
+    """
     cast = _make_cast()
     cast_ids = list(cast.keys())
     call_llm = make_bedrock_caller(
@@ -48,12 +66,10 @@ def test_get_shots_for_paragraph_against_real_bedrock():
 
 @pytest.mark.integration
 def test_continuity_preserved_across_paragraphs():
-    """A character not mentioned as moving in a follow-up paragraph should
-    keep their position/orientation from the end of the previous one.
-    Note: this is inherently a little flaky -- the model isn't guaranteed
-    to hold position perfectly every run, which is itself a known,
-    accepted limitation (see prompts.py's continuity instructions) rather
-    than something this test is meant to enforce with total strictness.
+    """
+    Verifies that a character who isn't described as moving keeps their position from the previous paragraph.
+
+    Note: this is inherently a little flaky -- the model isn't guaranteed to hold position perfectly every run. That is a known, accepted limitation (see the continuity instructions in prompts.py), rather than something this test enforces with total strictness.
     """
     cast = _make_cast()
     cast_ids = list(cast.keys())

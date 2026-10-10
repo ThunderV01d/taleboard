@@ -1,3 +1,12 @@
+"""
+Defines the prompts used to extract the cast and direct the shots from the story.
+
+Acts as a 'director' -- building the prompts dynamically.
+
+Attributes:
+    CAST_EXTRACTION_INSTRUCTIONS: str - Instructions for the model to extract the cast from a story, placed into the prompt.
+    SHOT_BREAKDOWN_INSTRUCTIONS: str - Instructions for the model to break the story down into shots, placed into the prompt.
+"""
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMShotDraft
 
 CAST_EXTRACTION_INSTRUCTIONS = """\
@@ -24,7 +33,15 @@ characters, and do not include anything they do or anywhere they go in the story
 """
 
 def build_cast_extraction_prompt(story_text: str) -> str:
-    """Builds a prompt for extracting the cast of characters from the story."""
+    """
+    Builds a prompt for extracting the cast of characters from the story.
+    
+    Arguments:
+        story_text: str - Story (in plain text).
+
+    Returns:
+        str - Full prompt to be passed to the LLM for cast extraction.
+    """
     return f"{CAST_EXTRACTION_INSTRUCTIONS}\n\nSTORY:\n{story_text}"
 
 SHOT_BREAKDOWN_INSTRUCTIONS = """\
@@ -50,7 +67,17 @@ def build_shot_breakdown_prompt(
     cast: dict[str,LLMCharacterDraft],
     previous_shot: LLMShotDraft | None,
 ) -> str:
-    """Builds a prompt for breaking a paragraph into storyboard shots."""
+    """
+    Builds a prompt for breaking a paragraph into storyboard shots.
+
+    Arguments:
+        paragraph: str - Paragraph to be broken down (in plain text).
+        cast: dict[str,LLMCharacterDraft] - Mapping between character IDs and the LLM character draft.
+        previous_shot: LLMShotDraft - Previous generated shot; used for context retention between shots. Defaults to None (for first shot).
+
+    Returns:
+        str - Full prompt to be passed to the LLM for shot breakdown.
+    """
     cast_lines = "\n".join(
         f"- id: {cast_id}, name: {char.name}, also called: {', '.join(char.aliases) or 'no other names'}, description: {char.description}"
         for cast_id, char in cast.items()
