@@ -91,7 +91,7 @@ def extract_cast(
 
 def to_domain_character(draft: LLMCharacterDraft, appearance_reference: str | None = None) -> Character:
     """
-    Converts an LLMCharacterDraft to a domain Character, adding an optional appearance reference.
+    Converts an LLMCharacterDraft to a domain Character, keeping its aliases and adding an optional appearance reference.
 
     Appearance reference is useful in the domain, not in the draft -- this is why this function exists.
 
@@ -105,5 +105,6 @@ def to_domain_character(draft: LLMCharacterDraft, appearance_reference: str | No
     return Character(
         name=draft.name,
         description=draft.description,
+        aliases=list(draft.aliases),
         appearance_reference=appearance_reference
     )

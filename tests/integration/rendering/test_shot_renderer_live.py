@@ -165,11 +165,11 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         background_cache=background_cache,
         reference_cache={},
     )
-    assert len(first_result) > 0
+    assert len(first_result.image) > 0
     assert call_count == 1  # One background render, no character calls at all
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    (OUTPUT_DIR / "background_only_shot.png").write_bytes(first_result)
+    (OUTPUT_DIR / "background_only_shot.png").write_bytes(first_result.image)
 
     second_result = render_shot(
         shot=shot,
@@ -179,7 +179,7 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         reference_cache={},
     )
     assert call_count == 1  # Unchanged: reused from the background cache
-    assert second_result == first_result
+    assert second_result.image == first_result.image
 
 @pytest.mark.integration
 def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(monkeypatch):
@@ -250,11 +250,11 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         background_cache=background_cache,
         reference_cache=reference_cache,
     )
-    assert len(first_result) > 0
+    assert len(first_result.image) > 0
     assert call_count == 5
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    (OUTPUT_DIR / "composited_shot_with_background.png").write_bytes(first_result)
+    (OUTPUT_DIR / "composited_shot_with_background.png").write_bytes(first_result.image)
 
     second_result = render_shot(
         shot=shot,
@@ -264,4 +264,4 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         reference_cache=reference_cache,
     )
     assert call_count == 5
-    assert second_result == first_result
+    assert second_result.image == first_result.image

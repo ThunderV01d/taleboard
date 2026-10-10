@@ -23,4 +23,4 @@ markers = [
 testpaths = ["tests"]
 
 [project.optional-dependencies]
-dev = ["pytest", "python-dotenv"]
+dev = ["pytest", "python-dotenv", "moto[dynamodb,s3]"]

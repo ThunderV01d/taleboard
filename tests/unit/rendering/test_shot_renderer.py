@@ -812,7 +812,7 @@ def test_render_shot_with_no_regions_renders_a_background():
         remove_background=spying_remove_background,
     )
 
-    assert len(result) > 0
+    assert len(result.image) > 0
     # Background removal is only ever called on the character path -- a background-only shot should never reach it
     assert character_calls["generate"] == 0
 
@@ -866,7 +866,7 @@ def test_render_shot_with_regions_renders_characters_and_background():
         remove_background=remove_background,
     )
 
-    assert len(result) > 0
+    assert len(result.image) > 0
     assert calls["generate"] == 3
 
 
@@ -951,7 +951,7 @@ def test_render_shot_composites_characters_over_the_rendered_background():
         io.BytesIO(_to_monochrome(_solid_color_png((60, 120, 180))))
     ).convert("RGB").getpixel((5, 5))
 
-    result_pixel = Image.open(io.BytesIO(result)).convert("RGB").getpixel((10, 10))
+    result_pixel = Image.open(io.BytesIO(result.image)).convert("RGB").getpixel((10, 10))
     assert result_pixel != (255, 255, 255)
     assert result_pixel == expected_background_pixel
 
@@ -1043,7 +1043,7 @@ def test_render_shot_passes_the_shots_shot_size_to_render_characters():
         shot=close_up_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={},  generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
 
-    assert wide_result != close_up_result
+    assert wide_result.image != close_up_result.image
 
 
 def test_reference_image_generated_once_per_character_and_reused_across_poses():
@@ -1233,14 +1233,43 @@ def test_persistently_empty_cutout_is_skipped_and_reported_not_cached():
     assert reference_cache == {}
 
 
-def test_render_shot_flags_needs_review_when_a_character_is_left_out():
+def test_render_shot_reports_a_left_out_character_in_its_result():
     """
-    Verifies that a shot with a character left out is flagged for human review.
+    Verifies that a character left out of a shot is reported in the render result, which then needs review.
     """
     generate_image, _, _ = _make_fakes()
     shot = _shot(regions=[_region()])
 
+    result = render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={},
+                         generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes())
+
+    assert result.rejected_character_ids == ("alice",)
+    assert result.needs_review is True
+
+
+def test_render_shot_never_modifies_the_shot_it_is_given():
+    """
+    Verifies that render_shot leaves the shot untouched, even when a character is left out -- flagging the shot is the caller's job.
+    """
+    generate_image, _, _ = _make_fakes()
+    shot = _shot(regions=[_region()])
+    before = shot.model_copy(deep=True)
+
     render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={},
                 generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes())
 
-    assert shot.needs_review is True
+    assert shot == before
+    assert shot.needs_review is False
+
+
+def test_render_shot_with_every_character_rendered_needs_no_review():
+    """
+    Verifies that a shot where every character rendered reports nothing left out.
+    """
+    generate_image, remove_background, _ = _make_fakes()
+
+    result = render_shot(_shot(regions=[_region()]), _character(), character_cache={}, background_cache={}, reference_cache={},
+                         generate_image=generate_image, remove_background=remove_background)
+
+    assert result.rejected_character_ids == ()
+    assert result.needs_review is False

@@ -217,11 +217,16 @@ def pipeline_run():
         }, indent=2)) # Writes the shots to output after shot breakdown -- for sanity check purposes
         character_cache, background_cache, reference_cache = {}, {}, {}
         images = []
+        rendered_shots = []
         for n, shot in enumerate(shots):
-            png = render_shot(shot, characters, character_cache, background_cache, reference_cache)
+            result = render_shot(shot, characters, character_cache, background_cache, reference_cache)
+            if result.needs_review:
+                shot = shot.model_copy(update={"needs_review": True})  # render_shot never modifies the shot; flagging it is the caller's job
+            rendered_shots.append(shot)
             path = OUTPUT_DIR / f"shot_{n:02d}_p{shot.paragraph_index}.png"
-            path.write_bytes(png)
+            path.write_bytes(result.image)
             images.append((path, shot))
+        shots = rendered_shots
         for character_id, reference in reference_cache.items():
             (OUTPUT_DIR / f"reference_{character_id}.png").write_bytes(reference)
 

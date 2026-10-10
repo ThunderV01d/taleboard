@@ -7,10 +7,12 @@ If a cutout is (close to) transparent, generation will be re-attempted a few tim
 
 Additionally, this module also contains caching logic used to save generation calls and preserve character consistency across shots -- the model generates a reference image on the first time it encounters a character. This reference image is cached and conditions future prompts containing that character (to preserve their facial likeness). Tangentially, the cutouts and background are also cached so that any shot that calls for a similar pose/background reuses the cache instead of wasting a separate generation call.
 
+The caches only need get and [] =, so a plain dict works (eg:- in tests), as do the persistent caches in taleboard.storage.caches (which survive between Lambda invocations).
+
 Attributes:
-    CutoutCache: dict[tuple[str,str,str,str],bytes] - Mapping between a specific character ID with a specific action pose in a specific orientation/angle and an already generated cutout image.
-    BackgroundCache: dict[tuple[str,str,str],bytes] - Mapping between a specific setting shot in a specific shot size with a specific angle and an already generated background image.
-    ReferenceImageCache: dict[str,bytes] - Mapping between a specific character ID and an already generated cutout image (to be used as a reference).
+    CutoutCache: ImageCache[tuple[str,str,str,str]] - Mapping between a specific character ID with a specific action pose in a specific orientation/angle and an already generated cutout image.
+    BackgroundCache: ImageCache[tuple[str,str,str]] - Mapping between a specific setting shot in a specific shot size with a specific angle and an already generated background image.
+    ReferenceImageCache: ImageCache[str] - Mapping between a specific character ID and an already generated cutout image (to be used as a reference).
     GenerateImage: Callable[[str,str],bytes] - Image generation function. Takes a prompt and negative prompt and returns an image in bytes (usually comes from together_caller or is mocked during testing).
     RemoveBackground: Callable[[bytes],bytes] - Background removal function. Takes an image and returns a character cutout image in bytes (usually comes from background_removal or is mocked during testing).
     MIN_OPAQUE_FRACTION: float - Minimum threshold of opaque pixels, below which an image is considered a "transparent" image with no subject.
@@ -19,7 +21,8 @@ Attributes:
 """
 import io
 import logging
-from typing import Callable
+from dataclasses import dataclass
+from typing import Callable, Protocol, TypeVar
 from PIL import Image
 
 from taleboard.rendering import background_removal, compositor, together_caller
@@ -27,9 +30,18 @@ from taleboard.rendering.prompts import build_background_prompt, build_character
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Region, Shot
 
-CutoutCache = dict[tuple[str, str, str, str], bytes]
-BackgroundCache = dict[tuple[str, str, str], bytes]
-ReferenceImageCache = dict[str, bytes]
+K = TypeVar("K", contravariant=True)
+
+class ImageCache(Protocol[K]):
+    """
+    Anything that can look up and store images by key -- a dict, or a persistent cache from taleboard.storage.caches.
+    """
+    def get(self, key: K, /) -> bytes | None: ...
+    def __setitem__(self, key: K, value: bytes, /) -> None: ...
+
+CutoutCache = ImageCache[tuple[str, str, str, str]]
+BackgroundCache = ImageCache[tuple[str, str, str]]
+ReferenceImageCache = ImageCache[str]
 
 GenerateImage = Callable[[str, str], bytes]
 RemoveBackground = Callable[[bytes], bytes]
@@ -123,6 +135,28 @@ def _generate_cutout(
             return cutout
     raise CutoutRejectedError(f"background removal found no subject after {MAX_CUTOUT_ATTEMPTS} generations: {text[:120]!r}")
 
+
+@dataclass(frozen=True)
+class RenderResult:
+    """
+    Outcome of rendering one shot.
+
+    Attributes:
+        image: bytes - Final composited shot image (in bytes).
+        rejected_character_ids: tuple[str,...] - Characters left out of the shot because their cutout was rejected. Defaults to ().
+    """
+    image: bytes
+    rejected_character_ids: tuple[str, ...] = ()
+
+    @property
+    def needs_review(self) -> bool:
+        """
+        Whether a human needs to review the shot -- true when any character was left out of it.
+
+        Returns:
+            bool - True if any character was left out.
+        """
+        return bool(self.rejected_character_ids)
 
 _NEUTRAL_REFERENCE_ACTION = "standing, neutral relaxed pose"
 
@@ -274,13 +308,13 @@ def render_shot(
     reference_cache: ReferenceImageCache,
     generate_image: GenerateImage | None = None,
     remove_background: RemoveBackground = background_removal.remove_background,
-) -> bytes:
+) -> RenderResult:
     """
     Top-level entry point for rendering a shot, background and all.
     
     Dispatches to a pure background render when the shot has no character regions at all -- eg:- an establishing shot, scenery etc.
 
-    A shot with rejected regions (ie:- one or more characters who were supposed to be in the shot were not rendered) is flagged as a shot that needs to be manually reviewed by a human.
+    The shot itself is never modified. If any character was left out (their cutout was rejected), the result says so -- it is up to the caller to flag the shot for review.
 
     Arguments:
         shot: Shot - Shot to be rendered.
@@ -292,7 +326,7 @@ def render_shot(
         remove_background: RemoveBackground - Background removal function (usually comes from background_removal or is mocked during testing).
     
     Returns:
-        bytes - Final composited shot image (in bytes).
+        RenderResult - The composited image, plus any characters that were left out.
     """
     background_generate = generate_image or together_caller.generate_background_image
     character_generate = generate_image or together_caller.generate_character_image
@@ -300,10 +334,8 @@ def render_shot(
     background = render_background(shot.setting, shot.shot_size, shot.angle, background_cache, background_generate)
 
     if not shot.regions:
-        return background
+        return RenderResult(image=background)
  
     rejected: list[str] = []
     image = render_characters(shot.regions, characters, character_cache, reference_cache, shot.angle, shot.shot_size, generate_image=character_generate, remove_background=remove_background, background=background, rejected=rejected)
-    if rejected:
-        shot.needs_review = True
-    return image
+    return RenderResult(image=image, rejected_character_ids=tuple(rejected))
