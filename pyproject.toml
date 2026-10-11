@@ -7,6 +7,7 @@ dependencies = [
     "boto3",
     "together",
     "rembg[cpu]",
+    "fastapi"
 ]
 
 [build-system]
@@ -23,4 +24,4 @@ markers = [
 testpaths = ["tests"]
 
 [project.optional-dependencies]
-dev = ["pytest", "python-dotenv", "moto[dynamodb,s3]"]
+dev = ["pytest", "python-dotenv", "moto[dynamodb,s3,sqs]", "httpx"]

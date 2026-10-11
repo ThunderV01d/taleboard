@@ -16,10 +16,10 @@ from moto import mock_aws
 from PIL import Image
 
 from taleboard.rendering.shot_renderer import render_shot
-from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
+from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame, ProjectStatus
 from taleboard.schema.models import Character, Region, Shot
 from taleboard.storage.caches import PersistentBackgroundCache, PersistentPoseCache, PersistentReferenceCache
-from taleboard.storage.project_store import ProjectStore, background_cache_sk, image_s3_key, pose_cache_sk, project_pk, shot_sk
+from taleboard.storage.project_store import ProjectStore, background_cache_sk, image_s3_key, pose_cache_sk, project_pk, shot_sk, PROJECTS_INDEX, JOB_LEASE_SECONDS
 
 TABLE = "taleboard-test"
 BUCKET = "taleboard-test-images"
@@ -45,7 +45,12 @@ def store(monkeypatch):
         boto3.client("dynamodb", region_name=REGION).create_table(
             TableName=TABLE,
             KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
-            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+            AttributeDefinitions=[{"AttributeName": n, "AttributeType": "S"} for n in ("PK", "SK", "GSI1PK", "GSI1SK")],
+            GlobalSecondaryIndexes=[{
+                "IndexName": PROJECTS_INDEX,
+                "KeySchema": [{"AttributeName": "GSI1PK", "KeyType": "HASH"}, {"AttributeName": "GSI1SK", "KeyType": "RANGE"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }],
             BillingMode="PAY_PER_REQUEST",
         )
         boto3.client("s3", region_name=REGION).create_bucket(Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION})
@@ -151,6 +156,8 @@ def test_project_round_trips_through_dynamodb(store):
     assert loaded.created_at == project.created_at
     assert loaded.cast == cast
     assert loaded.shots == shots
+    assert loaded.status == ProjectStatus.CREATED
+    assert loaded.shot_count is None
 
 
 def test_load_project_rejects_an_unknown_id(store):
@@ -300,3 +307,97 @@ def test_rerendering_with_fresh_persistent_caches_makes_no_generation_calls(stor
     second = render()
     assert calls["generate"] == 3  # Unchanged: everything came from DynamoDB + S3
     assert second.image == first.image
+
+def test_list_projects_returns_every_project_newest_first(store):
+    """
+    Verifies that listing projects goes through the index and returns only projects, newest first.
+    """
+    first = store.create_project("First")
+    second = store.create_project("Second")
+    store.save_shots(first.project_id, [_shot(0)])  # Shot items must never show up in the project list
+
+    assert [p.project_id for p in store.list_projects()] == [second.project_id, first.project_id]
+
+
+def test_a_project_takes_only_one_story(store):
+    """
+    Verifies that submitting a story marks the job pending, and that a second story is rejected.
+    """
+    project = store.create_project("Lighthouse")
+    store.submit_story(project.project_id, "job-1", "Alice waved.")
+
+    assert store.get_project(project.project_id).status == ProjectStatus.PENDING
+    assert store.load_story(project.project_id, "job-1") == "Alice waved."
+    with pytest.raises(ValueError, match="already has a story"):
+        store.submit_story(project.project_id, "job-2", "Bob waved.")
+
+
+def test_a_claimed_job_cannot_be_claimed_again_until_released(store):
+    """
+    Verifies the lease: a second delivery of a running job is turned away, but can take over once the job is released.
+    """
+    project = store.create_project("Lighthouse")
+    store.submit_story(project.project_id, "job-1", "Alice waved.")
+
+    assert store.claim_job(project.project_id, "job-1") is True
+    assert store.claim_job(project.project_id, "job-1") is False
+    store.release_job(project.project_id, "job-1")
+    assert store.claim_job(project.project_id, "job-1") is True
+
+
+def test_a_finished_or_superseded_job_cannot_be_claimed(store):
+    """
+    Verifies that a finished job, or a job ID that isn't the project's current one, is never claimed.
+    """
+    project = store.create_project("Lighthouse")
+    store.submit_story(project.project_id, "job-1", "Alice waved.")
+
+    assert store.claim_job(project.project_id, "some-other-job") is False
+    store.claim_job(project.project_id, "job-1")
+    store.finish_job(project.project_id, "job-1", ProjectStatus.COMPLETE)
+    assert store.claim_job(project.project_id, "job-1") is False
+
+
+def test_save_breakdown_replaces_stale_shots_and_sets_shot_count_last(store):
+    """
+    Verifies that a re-run breakdown with fewer shots leaves no stale extras, and that shot_count matches the final list.
+    """
+    project = store.create_project("Lighthouse")
+    store.save_shots(project.project_id, [_shot(i) for i in range(5)])  # Left behind by a crashed attempt
+
+    store.save_breakdown(project.project_id, {"alice": Character(name="Alice", description="A woman.")}, [_shot(i) for i in range(3)])
+
+    assert len(store.list_shots(project.project_id)) == 3
+    assert store.get_project(project.project_id).shot_count == 3
+    assert store.load_project(project.project_id).shot_count == 3
+
+
+def test_save_rendered_shot_marks_the_shot_done_and_stores_its_image(store):
+    """
+    Verifies that a rendered shot gets its generated_frame and review flag, and that its image is in S3.
+    """
+    project = store.create_project("Lighthouse")
+    store.save_shots(project.project_id, [_shot(0)])
+
+    store.save_rendered_shot(project.project_id, 0, _shot(0), _png(), needs_review=True)
+
+    shot = store.get_shot(project.project_id, 0)
+    assert shot.generated_frame == image_s3_key(project.project_id, "SHOT#0000#render")
+    assert shot.needs_review is True
+    assert store._read_s3(shot.generated_frame) == _png()
+    assert store.get_shot(project.project_id, 1) is None
+
+def test_a_failed_project_takes_a_new_story_with_a_fresh_breakdown(store):
+    """
+    Verifies that a failed project accepts a resubmitted story, clearing the old error and shot_count so the breakdown re-runs.
+    """
+    project = store.create_project("Lighthouse")
+    store.submit_story(project.project_id, "job-1", "Alice waved.")
+    store.claim_job(project.project_id, "job-1")
+    store.save_breakdown(project.project_id, {}, [_shot(0)])
+    store.finish_job(project.project_id, "job-1", ProjectStatus.FAILED, error="Bedrock timed out")
+
+    store.submit_story(project.project_id, "job-2", "Alice waved again.")
+
+    resubmitted = store.get_project(project.project_id)
+    assert (resubmitted.status, resubmitted.job_id, resubmitted.shot_count, resubmitted.error) == (ProjectStatus.PENDING, "job-2", None, None)

@@ -3,7 +3,7 @@ Persists projects to AWS -- structured metadata and cache lookups in DynamoDB, a
 
 Every project lives in one DynamoDB table, under the partition key PROJECT#<project_id>. The sort key says what each item is:
 
-    METADATA                                                       - project name, created_at
+    METADATA                                                       - project name, created_at, render_job state, shot_count
     CHARACTER#<character_id>                                       - name, description, aliases, appearance_reference (S3 key)
     SHOT#<zero-padded index>                                       - the shot's fields
     BGCACHE#<hash(setting)>#<shot_size>#<angle>                    - S3 key of a cached background
@@ -15,23 +15,28 @@ Attributes:
     TEXT_HASH_LENGTH: int - Number of hex characters kept from a SHA-256 hash of free-form text (setting, action).
     SHOT_INDEX_WIDTH: int - Number of digits a shot index is zero-padded to, so shots sort in story order.
     DEFAULT_REGION: str - AWS Region used when none is given.
+    PROJECTS_INDEX: str - Name of the sparse GSI that lists projects newest-first. Only METADATA items carry its keys.
+    JOB_LEASE_SECONDS: int - How long a worker holds a job before another delivery may take it over. Longer than Lambda's 15-minute maximum.
 """
 import hashlib
 import json
 import os
 import uuid
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
 
+from taleboard.schema.enums import ProjectStatus
 from taleboard.schema.models import Character, Project, Shot
 
 TEXT_HASH_LENGTH = 16
 SHOT_INDEX_WIDTH = 4
 DEFAULT_REGION = "eu-west-2"
-
+PROJECTS_INDEX = "projects-by-created-at"
+JOB_LEASE_SECONDS = 16 * 60
 
 def text_hash(text: str) -> str:
     """
@@ -131,6 +136,32 @@ def image_s3_key(project_id: str, sort_key: str) -> str:
     """
     return f"projects/{project_id}/{sort_key.replace('#', '/').lower()}.png"
 
+def story_s3_key(project_id: str, job_id: str) -> str:
+    """
+    Builds the S3 key a submiited story is stored under. Keyed by job, so a story can never be overwritten mid-render.
+    
+    Arguments:
+        project_id: str - Unique project ID.
+        job_id: str - Unique render job ID.
+
+    Returns:
+        str - S3 key.
+    """
+    return f"projects/{project_id}/story/{job_id}.txt"
+
+def _project_from_metadata(item: dict) -> Project:
+    """
+    Builds a Project (without shots or cast) from its METADATA item.
+
+    Arguments:
+        item: dict - The METADATA item.
+
+    Returns:
+        Project - The project's metadata and job state.
+    """
+    fields = {k: v for k,v in item.items() if k in Project.model_fields}
+    return Project(project_id=item["PK"].removeprefix("PROJECT#"),**fields)
+
 
 def _to_dynamo(data: dict) -> dict:
     """
@@ -143,6 +174,18 @@ def _to_dynamo(data: dict) -> dict:
         dict - The same data, with every float as a Decimal.
     """
     return json.loads(json.dumps(data), parse_float=Decimal)
+
+def _item_fields(item: dict) -> dict:
+    """
+    Strips the table's key attributes from an item, leaving only the model's own fields.
+
+    Arguments:
+        item: dict - A DynamoDB item.
+
+    Returns:
+        dict - The item without PK and SK.
+    """
+    return {k: v for k, v in item.items() if k not in ("PK", "SK")}
 
 
 class ProjectStore:
@@ -193,6 +236,9 @@ class ProjectStore:
             "SK": "METADATA",
             "name": project.name,
             "created_at": project.created_at.isoformat(),
+            "status": project.status.value,
+            "GSI1PK": "PROJECTS", # Sparse index key -- only METADATA items carry it, so the index lists projects and nothing else
+            "GSI1SK": project.created_at.isoformat()
         })
         return project
 
@@ -241,23 +287,15 @@ class ProjectStore:
         """
         Loads a whole project -- metadata, cast and shots -- with a single (paginated) query.
 
+        Raises a KeyError if no project with this ID exists.
+
         Arguments:
             project_id: str - Unique project ID.
 
         Returns:
             Project - The project, with shots in story order.
-
-        Raises:
-            KeyError - If no project with this ID exists.
         """
-        items = []
-        query = {"KeyConditionExpression": Key("PK").eq(project_pk(project_id))}
-        while True:
-            response = self._table.query(**query)
-            items.extend(response["Items"])
-            if "LastEvaluatedKey" not in response:
-                break
-            query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        items = self._query(project_id)
 
         metadata = next((item for item in items if item["SK"] == "METADATA"), None)
         if metadata is None:
@@ -266,13 +304,260 @@ class ProjectStore:
         cast = {}
         shots = []
         for item in items:  # Items come back sorted by SK, so shots are already in story order
-            fields = {k: v for k, v in item.items() if k not in ("PK", "SK")}
+            fields = _item_fields(item)
             if item["SK"].startswith("CHARACTER#"):
                 cast[item["SK"].removeprefix("CHARACTER#")] = Character.model_validate(fields)
             elif item["SK"].startswith("SHOT#"):
                 shots.append(Shot.model_validate(fields))
 
-        return Project(project_id=project_id, name=metadata["name"], created_at=metadata["created_at"], shots=shots, cast=cast)
+        return _project_from_metadata(metadata).model_copy(update={"shots":shots, "cast":cast})
+
+    def get_project(self, project_id: str) -> Project:
+        """
+        Gets a project's metadata and job state, without its shots or cast.
+
+        Raises a KeyError if no project with this ID exists.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            Project - The project, with empty shots and cast.
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": "METADATA"}).get("Item")
+        if item is None:
+            raise KeyError(f"No project with ID {project_id!r}")
+        return _project_from_metadata(item)
+
+    def list_projects(self) -> list[Project]:
+        """
+        Lists every project's metadata, newest first, through the sparse projects index.
+
+        Returns:
+            list[Project] - Every project, with empty shots and cast.
+        """
+        items = []
+        query = {"IndexName": PROJECTS_INDEX, "KeyConditionExpression": Key("GSI1PK").eq("PROJECTS"), "ScanIndexForward": False}
+        while True:
+            response = self._table.query(**query)
+            items.extend(response["Items"])
+            if "LastEvaluatedKey" not in response:
+                return [_project_from_metadata(item) for item in items]
+            query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+    def submit_story(self, project_id: str, job_id: str, story_text: str) -> None:
+        """
+        Stores a story and marks the project's render job as pending. A project only ever takes one story, unless its job failed.
+
+        Raises a ValueError if the project already has a story that hasn't failed (or the project doesn't exist).
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+            story_text: str - The story (in plain text).
+        """
+        self._s3.put_object(Bucket=self._bucket, Key=story_s3_key(project_id, job_id), Body=story_text.encode("utf-8"), ContentType="text/plain; charset=utf-8")
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": "METADATA"},
+                UpdateExpression="SET #status = :pending, job_id = :job_id REMOVE shot_count, #error", # A resubmitted story gets a fresh breakdown -- but keeps every cached image
+                ConditionExpression="#status IN (:created,:failed)",
+                ExpressionAttributeNames={"#status": "status", "#error":"error"},  # 'status' and 'error' are DynamoDB reserved words
+                ExpressionAttributeValues={":pending": ProjectStatus.PENDING.value, ":created": ProjectStatus.CREATED.value, ":failed": ProjectStatus.FAILED.value, ":job_id": job_id},
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            raise ValueError(f"Project {project_id!r} already has a story") from None
+
+    def load_story(self, project_id: str, job_id: str) -> str:
+        """
+        Loads the story submitted for a render job.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+
+        Returns:
+            str - The story (in plain text).
+        """
+        return self._read_s3(story_s3_key(project_id, job_id)).decode("utf-8")
+
+    def claim_job(self, project_id: str, job_id: str) -> bool:
+        """
+        Claims a render job for this worker, unless another delivery of the same job is still running.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+
+        Returns:
+            bool - True if the job was claimed; False if it's finished, superseded, or held by another worker.
+        """
+        now = int(time.time())
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": "METADATA"},
+                UpdateExpression="SET #status = :in_progress, lease_until = :lease_until",
+                ConditionExpression="job_id = :job_id AND #status IN (:pending, :in_progress) AND (attribute_not_exists(lease_until) OR lease_until < :now)",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":in_progress": ProjectStatus.IN_PROGRESS.value, ":pending": ProjectStatus.PENDING.value,
+                    ":job_id": job_id, ":now": now, ":lease_until": now + JOB_LEASE_SECONDS,
+                },
+            )
+            return True
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    def release_job(self, project_id: str, job_id: str) -> None:
+        """
+        Gives up the lease on an unfinished job, so the next delivery can claim it straight away.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+        """
+        self._table.update_item(
+            Key={"PK": project_pk(project_id), "SK": "METADATA"},
+            UpdateExpression="SET lease_until = :zero",
+            ConditionExpression="job_id = :job_id",
+            ExpressionAttributeValues={":zero": 0, ":job_id": job_id},
+        )
+
+    def finish_job(self, project_id: str, job_id: str, status: ProjectStatus, error: str | None = None) -> None:
+        """
+        Marks a render job as complete or failed, and releases its lease.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+            status: ProjectStatus - COMPLETE or FAILED.
+            error: str - Why the job failed. Defaults to None.
+        """
+        self._table.update_item(
+            Key={"PK": project_pk(project_id), "SK": "METADATA"},
+            UpdateExpression="SET #status = :status, #error = :error REMOVE lease_until",
+            ConditionExpression="job_id = :job_id",
+            ExpressionAttributeNames={"#status": "status", "#error": "error"},
+            ExpressionAttributeValues={":status": status.value, ":error": error, ":job_id": job_id},
+        )
+
+    def save_breakdown(self, project_id: str, characters: dict[str, Character], shots: list[Shot]) -> None:
+        """
+        Saves a story's breakdown as the job's checkpoint -- the cast, then every (unrendered) shot, then shot_count.
+
+        shot_count is written last, so it only exists once the shot list is complete. Any shots left by an earlier, crashed attempt are deleted first, so a shorter breakdown can't leave stale extras behind.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            characters: dict[str,Character] - Mapping of character IDs to characters.
+            shots: list[Shot] - Shots in story order.
+        """
+        with self._table.batch_writer() as batch:
+            for item in self._query(project_id, "SHOT#"):
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        self.save_characters(project_id, characters)
+        self.save_shots(project_id, shots)
+        self._table.update_item(
+            Key={"PK": project_pk(project_id), "SK": "METADATA"},
+            UpdateExpression="SET shot_count = :count",
+            ExpressionAttributeValues={":count": len(shots)},
+        )
+
+    def list_shots(self, project_id: str) -> list[Shot]:
+        """
+        Lists a project's shots in story order -- including unrendered ones while a job is running.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            list[Shot] - Every saved shot, in story order.
+        """
+        return [Shot.model_validate(_item_fields(item)) for item in self._query(project_id, "SHOT#")]
+
+    def list_characters(self, project_id: str) -> dict[str, Character]:
+        """
+        Lists a project's cast.
+        
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            dict[str,Character] - Mapping of character IDs to characters.
+        """
+        return {item["SK"].removeprefix("CHARACTER#"):Character.model_validate(_item_fields(item)) for item in self._query(project_id, "CHARACTER#")}
+
+    def get_shot(self, project_id: str, index: int) -> Shot | None:
+        """
+        Gets one shot.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            index: int - Position of the shot in the story (0-indexed).
+
+        Returns:
+            Shot - The shot, or None if there's no shot at that position.
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": shot_sk(index)}).get("Item")
+        return None if item is None else Shot.model_validate(_item_fields(item))
+
+    def save_rendered_shot(self, project_id: str, index: int, shot: Shot, image: bytes, needs_review: bool) -> Shot:
+        """
+        Stores a shot's composited image, then marks the shot as rendered by pointing its generated_frame at it.
+
+        A set generated_frame is the only record that a shot is done -- both status polling and job resumption read it.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            index: int - Position of the shot in the story (0-indexed).
+            shot: Shot - The shot that was rendered.
+            image: bytes - Composited shot image (PNG, in bytes).
+            needs_review: bool - Whether a human needs to review the shot (eg:- a character was left out).
+
+        Returns:
+            Shot - The shot, as saved.
+        """
+        s3_key = image_s3_key(project_id, shot_sk(index) + "#render")
+        self._write_s3(s3_key, image)
+        rendered = shot.model_copy(update={"generated_frame": s3_key, "needs_review": shot.needs_review or needs_review})
+        self.save_shot(project_id, index, rendered)
+        return rendered
+
+    def presigned_url(self, s3_key: str, expires_in: int = 3600) -> str:
+        """
+        Builds a temporary URL that lets a browser download one image directly from S3.
+
+        Arguments:
+            s3_key: str - S3 key of the image.
+            expires_in: int - How long the URL stays valid (in seconds). Defaults to 3600.
+
+        Returns:
+            str - The presigned URL.
+        """
+        return self._s3.generate_presigned_url("get_object", Params={"Bucket": self._bucket, "Key": s3_key}, ExpiresIn=expires_in)
+
+    def _query(self, project_id: str, sort_key_prefix: str | None = None) -> list[dict]:
+        """
+        Gets every item in a project, or only those whose sort key starts with a prefix, following pagination.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            sort_key_prefix: str - Only return items whose sort key starts with this. Defaults to None (every item).
+
+        Returns:
+            list[dict] - Matching items, sorted by sort key.
+        """
+        condition = Key("PK").eq(project_pk(project_id))
+        if sort_key_prefix is not None:
+            condition = condition & Key("SK").begins_with(sort_key_prefix)
+        items, query = [], {"KeyConditionExpression": condition}
+        while True:
+            response = self._table.query(**query)
+            items.extend(response["Items"])
+            if "LastEvaluatedKey" not in response:
+                return items
+            query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
 
     def get_image(self, project_id: str, sort_key: str) -> bytes | None:
         """
@@ -326,13 +611,12 @@ class ProjectStore:
         """
         Stores a character's reference image -- uploads it to S3 first, then points their appearance_reference at it.
 
+        Raises a KeyError if the character hasn't been saved to the project yet.
+
         Arguments:
             project_id: str - Unique project ID.
             character_id: str - Unique character ID.
             image: bytes - Reference image (PNG, in bytes).
-
-        Raises:
-            KeyError - If the character hasn't been saved to the project yet.
         """
         s3_key = image_s3_key(project_id, character_sk(character_id) + "#reference")
         self._write_s3(s3_key, image)

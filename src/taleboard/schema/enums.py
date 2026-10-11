@@ -54,3 +54,21 @@ class CameraAngle(str,Enum):
     EYE_LEVEL = "eye_level"
     LOW = "low"
     HIGH = "high"
+
+class ProjectStatus(str,Enum):
+    """
+    Lifecycle of a project's render job.
+
+    Attributes:
+        CREATED: str - Represents a project where no story is submitted yet.
+        PENDING: str - Represents a project where a story is submitted and a job is queued.
+        IN_PROGRESS: str - Represents a project where a worker is breaking down or rendering a story.
+        COMPLETE: str - Represents a project where the render job is complete.
+        FAILED: str - Represents a project where the render job has failed.
+    """
+    # These enums are never sent to the LLM -- hence why the docstring is so elaborate.
+    CREATED = "created"
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETE = "complete"
+    FAILED = "failed"

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from taleboard.schema.enums import PositionCell, SizeInFrame, Orientation, ShotSize, CameraAngle
+from taleboard.schema.enums import PositionCell, SizeInFrame, Orientation, ShotSize, CameraAngle, ProjectStatus
 
 
 class Character(BaseModel):
@@ -74,11 +74,19 @@ class Project(BaseModel):
         project_id: str - Unique identifier of the project.
         name: str - Name of the project.
         created_at: datetime - When the project was created (UTC).
+        status: ProjectStatus - The stage of the project's lifecycle the render job is on. Defaults to CREATED.
+        job_id: str - ID of the current render job. Defaults to None (no story submitted yet).
+        shot_count: int - Number of shots, once the breakdown is final. Defaults to None (breakdown not finished).
+        error: str - Why the render job failed. Defaults to None.
         shots: list[Shot] - A list of shots that are in the project, in story order. Defaults to [].
         cast: dict[str,Character] - A mapping between each unique character ID and each character. Defaults to {}.
     """
     project_id: str
     name: str
     created_at: datetime
+    status: ProjectStatus = ProjectStatus.CREATED
+    job_id: str | None = None
+    shot_count: int | None = None
+    error: str | None = None
     shots: list[Shot] = Field(default_factory=list)
     cast: dict[str, Character] = Field(default_factory=dict)

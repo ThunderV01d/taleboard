@@ -72,7 +72,7 @@ def extract_cast(
     """
     Extracts a cast of characters from the story.
 
-    If the story is empty, raises a ValueError.
+    Raises a ValueError if the story is empty.
 
     Arguments:
         story_text: str - Entire story (in plain text).
