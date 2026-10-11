@@ -50,6 +50,16 @@ class JobQueue:
         """
         self._sqs.send_message(QueueUrl=self._queue_url, MessageBody=json.dumps({"project_id": project_id, "job_id": job_id}))
 
+    def retry_after(self, receipt_handle: str, delay_s: int) -> None:
+        """
+        Makes a received message visible again after a delay, rather than after the queue's full visibility timeout.
+
+        Arguments:
+            receipt_handle: str - The received message's receipt handle.
+            delay_s: int - Seconds until the message is delivered again (at most 12 hours, SQS's limit).
+        """
+        self._sqs.change_message_visibility(QueueUrl=self._queue_url, ReceiptHandle=receipt_handle, VisibilityTimeout=min(delay_s, 12 * 60 * 60))
+
 
 def parse_message(body: str) -> tuple[str, str]:
     """

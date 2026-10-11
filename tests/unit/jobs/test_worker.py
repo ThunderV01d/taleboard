@@ -12,6 +12,8 @@ from PIL import Image
 
 from taleboard.jobs import worker
 from taleboard.jobs.worker import JobBusyError, JobOutcome, run_job
+from taleboard.jobs.queue import JobQueue
+from taleboard.storage.project_store import JOB_LEASE_SECONDS
 from taleboard.parsing.story_breakdown import StoryBreakdown
 from taleboard.rendering.shot_renderer import render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ProjectStatus, ShotSize, SizeInFrame
@@ -212,8 +214,9 @@ def test_a_duplicate_delivery_of_a_running_job_is_retried_later(store, queue):
     store.claim_job(pid, "job-1")  # Another worker holds the job
     break_down, render, calls = _fakes()
 
-    with pytest.raises(JobBusyError):
+    with pytest.raises(JobBusyError) as busy:
         run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render)
+    assert JOB_LEASE_SECONDS - 5 <= busy.value.retry_after_s <= JOB_LEASE_SECONDS
     assert calls == {"break_down": 0, "generate": 0}
 
 
@@ -244,7 +247,7 @@ def _sqs_event(project_id: str, attempt: int) -> dict:
     Returns:
         dict - SQS event holding one message for job "job-1".
     """
-    return {"Records": [{"body": json.dumps({"project_id": project_id, "job_id": "job-1"}), "attributes": {"ApproximateReceiveCount": str(attempt)}}]}
+    return {"Records": [{"body": json.dumps({"project_id": project_id, "job_id": "job-1"}), "receiptHandle": "receipt-1", "attributes": {"ApproximateReceiveCount": str(attempt)}}]}
 
 
 _CONTEXT = SimpleNamespace(get_remaining_time_in_millis=_plenty_of_time)
@@ -326,3 +329,23 @@ def test_handler_fails_a_job_after_the_last_attempt(store, monkeypatch):
     worker.handler(_sqs_event(pid, attempt=worker.MAX_ATTEMPTS), _CONTEXT)
 
     assert store.get_project(pid).status == ProjectStatus.FAILED
+
+def test_handler_retries_a_busy_delivery_just_after_the_lease_expires(store, monkeypatch):
+    """
+    Verifies that a busy delivery is re-raised with its message set to reappear just after the holder's lease runs out -- not after the full visibility timeout.
+
+    Arguments:
+        store: ProjectStore - Fake-backed store.
+        monkeypatch: pytest.MonkeyPatch - Used to record the retry delay.
+    """
+    pid = _submit(store)
+    store.claim_job(pid, "job-1")  # Another worker holds the job
+    retries = []
+    monkeypatch.setattr(JobQueue, "retry_after", lambda self, receipt_handle, delay_s: retries.append((receipt_handle, delay_s)))
+
+    with pytest.raises(JobBusyError):
+        worker.handler(_sqs_event(pid, attempt=1), _CONTEXT)
+
+    [(receipt_handle, delay_s)] = retries
+    assert receipt_handle == "receipt-1"
+    assert JOB_LEASE_SECONDS <= delay_s <= JOB_LEASE_SECONDS + worker.BUSY_RETRY_MARGIN_S

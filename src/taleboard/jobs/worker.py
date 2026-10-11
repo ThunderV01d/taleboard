@@ -11,6 +11,7 @@ Every delivery of a job does the same thing: render whatever isn't finished yet.
 Attributes:
     MAX_ATTEMPTS: int - Deliveries before a failing job is marked failed. Must match the queue's maxReceiveCount.
     CONTINUATION_MARGIN_MS: int - Time (in milliseconds) that must remain to start rendering another shot -- any less, and the job is handed over.
+    BUSY_RETRY_MARGIN_S: int - Extra seconds added after a lease expires before a busy delivery is retried, so it never arrives a moment too early.
     BreakDown: Callable[[str],StoryBreakdown] - Story breakdown function (usually break_down_story, or mocked during testing).
     Render: Callable[...,RenderResult] - Shot rendering function (usually render_shot, or mocked during testing).
 """
@@ -27,6 +28,7 @@ from taleboard.storage.project_store import ProjectStore
 
 MAX_ATTEMPTS = 3
 CONTINUATION_MARGIN_MS = 2 * 60 * 1000
+BUSY_RETRY_MARGIN_S = 15
 
 BreakDown = Callable[[str], StoryBreakdown]
 Render = Callable[..., RenderResult]
@@ -48,8 +50,21 @@ class JobOutcome(str, Enum):
 
 class JobBusyError(RuntimeError):
     """
-    Raised when another delivery of the same job still holds its lease -- the message should be retried later, not dropped.
+    Raised when another delivery of the same job still holds its lease -- the message should be retried once the lease runs out, not dropped.
+
+    Attributes:
+        retry_after_s: int - Seconds until the holder's lease expires.
     """
+    def __init__(self, message: str, retry_after_s: int):
+        """
+        Records how long until the job can be claimed.
+
+        Arguments:
+            message: str - Error message.
+            retry_after_s: int - Seconds until the holder's lease expires.
+        """
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 def run_job(
@@ -81,7 +96,7 @@ def run_job(
     if not store.claim_job(project_id, job_id):
         project = store.get_project(project_id)
         if project.job_id == job_id and project.status in (ProjectStatus.PENDING, ProjectStatus.IN_PROGRESS):
-            raise JobBusyError(f"Job {job_id!r} is already being run by another delivery")
+            raise JobBusyError(f"Job {job_id!r} is already being run by another delivery", store.lease_seconds_remaining(project_id))
         return JobOutcome.SKIPPED
 
     if store.get_project(project_id).shot_count is None:
@@ -112,7 +127,7 @@ def handler(event: dict, context) -> None:
     """
     Worker Lambda entry point. The queue should deliver one message per invocation (batch size 1).
 
-    Retryable failures are re-raised, so SQS delivers the message again. After MAX_ATTEMPTS, or for a failure retrying can't fix, the job is marked failed instead.
+    Retryable failures are re-raised, so SQS delivers the message again. A delivery that finds the job busy is retried just after the holder's lease expires. After MAX_ATTEMPTS, or for a failure retrying can't fix, the job is marked failed instead.
 
     Arguments:
         event: dict - SQS event.
@@ -124,7 +139,9 @@ def handler(event: dict, context) -> None:
         attempt = int(record["attributes"]["ApproximateReceiveCount"])
         try:
             run_job(store, queue, project_id, job_id, context.get_remaining_time_in_millis)
-        except JobBusyError:
+        except JobBusyError as e:
+            # Comes back just after the holder's lease runs out -- rather than after the full visibility timeout -- usually bouncing only once
+            queue.retry_after(record["receiptHandle"], e.retry_after_s + BUSY_RETRY_MARGIN_S)
             raise
         except Exception as e:
             logging.getLogger(__name__).exception("Render job %s failed (attempt %d of %d)", job_id, attempt, MAX_ATTEMPTS)

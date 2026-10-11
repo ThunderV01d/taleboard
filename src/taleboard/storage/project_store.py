@@ -423,6 +423,20 @@ class ProjectStore:
             ExpressionAttributeValues={":zero": 0, ":job_id": job_id},
         )
 
+    def lease_seconds_remaining(self, project_id: str) -> int:
+        """
+        Gets how long the current holder's lease on the project's render job still runs.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            int - Seconds until the lease expires (0 if there's no lease, or it has already expired).
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": "METADATA"}, ProjectionExpression="lease_until").get("Item") or {}
+        return max(0, int(item.get("lease_until", 0)) - int(time.time()))
+
+
     def finish_job(self, project_id: str, job_id: str, status: ProjectStatus, error: str | None = None) -> None:
         """
         Marks a render job as complete or failed, and releases its lease.
