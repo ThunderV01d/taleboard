@@ -34,8 +34,8 @@ A story is broken into paragraphs, each paragraph into one or more shots, and ea
 - **Persistence** — a project lives in a single DynamoDB table (metadata, cast, and one item per shot), with every generated image in S3. All three render caches (backgrounds, poses, character references) are persisted too, so a pose or background is never paid for twice, even across separate render jobs on the same project.
 - **HTTP API** — FastAPI on Lambda behind API Gateway: create and list projects, submit a story, poll render progress, and fetch shots and characters. Images are returned as presigned S3 URLs, so image bytes never pass through the API.
 - **Asynchronous render jobs** — submitting a story enqueues a job on SQS and returns immediately; a container-image worker Lambda breaks the story down and renders it. Jobs are safe to retry: a lease stops two workers rendering the same job, the breakdown is checkpointed so a retry never pays for it again, and a retry resumes from the first unrendered shot. A job that needs longer than one Lambda run (15 minutes) hands itself off to a fresh one.
-- **Failure handling** — bad input fails a job immediately; a transient failure is retried up to 3 times, a minute apart; a job that still can't finish lands on a dead-letter queue, where a recovery Lambda marks it failed (with a CloudWatch alarm). A failed project can take a new story, reusing everything already cached.
-- **Infrastructure as code** — the whole backend is one AWS CDK (Python) stack with least-privilege IAM: each Lambda can reach only what it uses, and deploys run through CDK's bootstrap roles rather than an admin user. The Together AI key lives in SSM Parameter Store, and the API is throttled as a cost guard.
+- **Failure handling** — bad input fails a job immediately; a transient failure is retried, a minute apart, for up to 5 attempts; a job that still can't finish lands on a dead-letter queue, where a recovery Lambda marks it failed (with a CloudWatch alarm). A failed project can take a new story, reusing everything already cached.
+- **Infrastructure as code** — the whole backend is one AWS CDK (Python) stack with least-privilege IAM: each Lambda can reach only what it uses, and deploys run through CDK's bootstrap roles rather than an admin user. The Together AI key lives in SSM Parameter Store, and the API is throttled as a cost guard. Every request needs a shared X-API-Key header, a cost guard rather than real authentication.
 - **Tested end to end on AWS** — a real story renders completely through the deployed stack (13 shots in about 9 minutes, around $0.45).
 
 **Known issues:**
@@ -51,7 +51,6 @@ A story is broken into paragraphs, each paragraph into one or more shots, and ea
 **Not yet built:**
 - The canvas editor (see [Planned: Canvas Editor](#planned-canvas-editor)).
 - The frontend (planned for S3 + CloudFront).
-- Authentication on the API.
 
 ## Planned: Canvas Editor
 
@@ -166,7 +165,7 @@ python -m pytest tests/integration/test_story_to_render_live.py -m integration -
 Output (rendered shots, shots.json, run_log.json with costs, and a contact sheet) is written to tests/integration/output/e2e/, which is git-ignored.
 
 ### Deploying to AWS
-Needs Docker running (the worker image and Lambda packages are built locally), Node.js for the CDK CLI, and Bedrock access to Claude Haiku 4.5 in eu-west-2. Set your own AWS account ID in `infra/app.py`, and store your Together AI key in SSM Parameter Store as a SecureString named `/taleboard/together-api-key`.
+Needs Docker running (the worker image and Lambda packages are built locally), Node.js for the CDK CLI, and Bedrock access to Claude Haiku 4.5 in eu-west-2. Set your own AWS account ID in `infra/app.py`, and store two SecureStrings in SSM Parameter Store: your Together AI key as `/taleboard/together-api-key`, and a random API key as `/taleboard/api-key`.
 
 ```bash
 npm install -g aws-cdk
@@ -176,11 +175,11 @@ cdk bootstrap # once per account and region
 cdk deploy # prints the API URL
 ```
 
-Then, with `$API` set to that URL and `$PROJECT_ID` to the ID the first call returns:
+Then, with `$API` set to that URL, `$API_KEY` to your API key, and `$PROJECT_ID` to the ID the first call returns:
 
 ```bash
-curl -X POST $API/projects -H "content-type: application/json" -d '{"name": "My story"}'   # returns the project_id
-curl -X POST $API/projects/$PROJECT_ID/story -H "content-type: application/json" -d '{"story": "..."}'
-curl $API/projects/$PROJECT_ID/status   # poll until "complete"
-curl $API/projects/$PROJECT_ID/shots    # shots, with presigned image URLs
+curl -X POST $API/projects -H "content-type: application/json" -d '{"name": "My story"}' -H "X-API-Key: $API_KEY"   # returns the project_id
+curl -X POST $API/projects/$PROJECT_ID/story -H "content-type: application/json" -d '{"story": "..."}' -H "X-API-Key: $API_KEY"
+curl $API/projects/$PROJECT_ID/status -H "X-API-Key: $API_KEY"   # poll until "complete"
+curl $API/projects/$PROJECT_ID/shots -H "X-API-Key: $API_KEY"    # shots, with presigned image URLs
 ```

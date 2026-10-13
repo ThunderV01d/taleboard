@@ -7,18 +7,20 @@ import json
 import subprocess
 import sys
 
+import boto3
 import pytest
 from fastapi.testclient import TestClient
 
-from taleboard.api.app import app, get_queue, get_store
+from taleboard.api.app import app, get_api_key, get_queue, get_store
 from taleboard.schema.enums import CameraAngle, ProjectStatus, ShotSize
 from taleboard.schema.models import Character, Shot
 
+TEST_API_KEY = "test-api-key"
 
 @pytest.fixture
 def client(store, queue):
     """
-    A test client whose store and queue are the fakes.
+    A test client whose store, queue and expected API key are fakes, and which sends that key on every request.
 
     Arguments:
         store: ProjectStore - Fake-backed store.
@@ -29,7 +31,8 @@ def client(store, queue):
     """
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_queue] = lambda: queue
-    yield TestClient(app)
+    app.dependency_overrides[get_api_key] = lambda: TEST_API_KEY
+    yield TestClient(app, headers={"X-API-Key": TEST_API_KEY})
     app.dependency_overrides.clear()
 
 
@@ -180,6 +183,40 @@ def test_characters_are_listed_with_their_reference_image_url(client, store):
     assert characters["alice"]["aliases"] == ["Al"]
     assert characters["alice"]["appearance_reference_url"].startswith("https://")
     assert characters["bob"]["appearance_reference"] is None and characters["bob"]["appearance_reference_url"] is None
+
+def test_requests_without_a_valid_api_key_are_rejected_with_401(client):
+    """
+    Verifies that a missing or wrong API key gets a 401 -- on reads as well as on the paid story endpoint.
+
+    Arguments:
+        client: TestClient - Client for the API (sends the right key by default).
+    """
+    no_key = TestClient(app)  # Same overrides, but sends no key
+    assert no_key.get("/projects").status_code == 401
+    assert no_key.post("/projects/any-id/story", json={"story": "Once upon a time."}).status_code == 401
+
+    wrong_key = client.get("/projects", headers={"X-API-Key": "wrong-key"})
+    assert wrong_key.status_code == 401
+    assert wrong_key.headers["www-authenticate"] == "APIKey"
+
+    assert client.get("/projects").status_code == 200
+
+
+def test_the_api_key_is_read_from_parameter_store(aws, monkeypatch):
+    """
+    Verifies that the expected API key comes from SSM Parameter Store.
+
+    Arguments:
+        aws: tuple[ProjectStore,JobQueue] - The shared fakes (provides fake credentials and an active moto mock).
+        monkeypatch: pytest.MonkeyPatch - Used to point the API at the parameter.
+    """
+    boto3.client("ssm").put_parameter(Name="/taleboard/api-key", Value="secret-api-key", Type="SecureString")
+    monkeypatch.setenv("TALEBOARD_API_KEY_PARAMETER", "/taleboard/api-key")
+    get_api_key.cache_clear()
+    try:
+        assert get_api_key() == "secret-api-key"
+    finally:
+        get_api_key.cache_clear()  # Don't leak the cached key into other tests
 
 
 def test_the_api_never_loads_the_rendering_pipeline():

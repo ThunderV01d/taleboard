@@ -6,6 +6,8 @@ Attributes:
     SRC_DIR: Path - Source folder bundled into the API and dead-letter Lambdas (with src/requirements.txt).
     PROJECTS_INDEX: str - Name of the sparse project-listing GSI (must match taleboard.storage.project_store).
     TOGETHER_KEY_PARAMETER: str - Name of the SSM SecureString holding the Together AI API key (created by hand).
+    API_KEY_PARAMETER: str - Name of the SSM SecureString holding the API's shared key (created by hand).
+    MAX_ATTEMPTS: int - Deliveries before a job is dead-lettered (must match taleboard.jobs.worker.MAX_ATTEMPTS).
     HAIKU_PROFILE_ID: str - Bedrock EU cross-region inference profile used by the story breakdown.
     HAIKU_MODEL_ID: str - Foundation model behind that profile.
 """
@@ -34,6 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
 PROJECTS_INDEX = "projects-by-created-at"
 TOGETHER_KEY_PARAMETER = "/taleboard/together-api-key"
+API_KEY_PARAMETER = "/taleboard/api-key"
+MAX_ATTEMPTS = 5
 HAIKU_PROFILE_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 HAIKU_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -67,16 +71,19 @@ class TaleboardStack(Stack):
         )
 
         # Job queue -- visibility outlasts the worker's 15-minute timeout, and matches the 16-minute job lease
-        dead_letters = sqs.Queue(self, "DeadLetters", retention_period=Duration.days(14), enforce_ssl=True)
+        dead_letters = sqs.Queue(self, "DeadLetters", retention_period=Duration.days(14), enforce_ssl=True)        
         jobs = sqs.Queue(
             self, "Jobs",
             visibility_timeout=Duration.minutes(16),
-            dead_letter_queue=sqs.DeadLetterQueue(queue=dead_letters, max_receive_count=3),
+            dead_letter_queue=sqs.DeadLetterQueue(queue=dead_letters, max_receive_count=MAX_ATTEMPTS),
             enforce_ssl=True,
         )
 
         together_key = ssm.StringParameter.from_secure_string_parameter_attributes(
             self, "TogetherKey", parameter_name=TOGETHER_KEY_PARAMETER
+        )
+        api_key = ssm.StringParameter.from_secure_string_parameter_attributes(
+            self, "ApiKey", parameter_name=API_KEY_PARAMETER
         )
         storage_env = {"TALEBOARD_TABLE": table.table_name, "TALEBOARD_BUCKET": bucket.bucket_name}
 
@@ -104,7 +111,7 @@ class TaleboardStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             memory_size=512,
             timeout=Duration.seconds(15),
-            environment={**storage_env, "TALEBOARD_QUEUE_URL": jobs.queue_url},
+            environment={**storage_env, "TALEBOARD_QUEUE_URL": jobs.queue_url, "TALEBOARD_API_KEY_PARAMETER":api_key.parameter_name},
             bundling=BundlingOptions(asset_excludes=["__pycache__", "*.egg-info"]),
             log_group=self._log_group("Api"),
         )
@@ -124,14 +131,14 @@ class TaleboardStack(Stack):
         worker.add_event_source(event_sources.SqsEventSource(jobs, batch_size=1, max_concurrency=2))
         dead_letter_fn.add_event_source(event_sources.SqsEventSource(dead_letters, batch_size=1))
 
-        # Permissions (consuming a queue already grants sqs:ChangeMessageVisibility; the SecureString uses the
-        # AWS-managed aws/ssm key, so no explicit kms:Decrypt is needed)
+        # Permissions (consuming a queue already grants sqs:ChangeMessageVisibility; the SecureStrings use the AWS-managed aws/ssm key, so no explicit kms:Decrypt is needed)
         for fn in (api_fn, worker, dead_letter_fn):
             table.grant_read_write_data(fn)
         for fn in (api_fn, worker):
             bucket.grant_read_write(fn, "projects/*")
             jobs.grant_send_messages(fn)  # API enqueues; worker self-continues
         together_key.grant_read(worker)
+        api_key.grant_read(api_fn) # Only the API checks the key -- the worker never sees it
         worker.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
             resources=[
@@ -140,18 +147,26 @@ class TaleboardStack(Stack):
             ],
         ))
 
-        # HTTP API -- $default route proxies everything to FastAPI; throttled because POST /story spends real money
+        # HTTP API -- an explicit GET/POST route rather than $default: a catch-all route also catches OPTIONS, which stops
+        # API Gateway answering CORS preflights itself 
+        # Add any new method (eg:- the editor's PUT/DELETE) to this list
+        # Throttled because POST /story spends real money
         http_api = apigw.HttpApi(
             self, "HttpApi",
-            default_integration=HttpLambdaIntegration("ApiIntegration", api_fn),
             cors_preflight=apigw.CorsPreflightOptions(
                 allow_origins=[cors_origin],
-                allow_methods=[apigw.CorsHttpMethod.ANY],
-                allow_headers=["content-type"],
+                allow_methods=[apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST],
+                allow_headers=["content-type", "x-api-key"],
                 max_age=Duration.hours(1),
             ),
             create_default_stage=False,
         )
+        http_api.add_routes(
+            path="/{proxy+}",
+            methods=[apigw.HttpMethod.GET, apigw.HttpMethod.POST],
+            integration=HttpLambdaIntegration("ApiIntegration", api_fn),
+        )
+
         stage = http_api.add_stage(
             "DefaultStage",
             stage_name="$default",

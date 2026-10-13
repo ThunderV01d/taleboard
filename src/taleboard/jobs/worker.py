@@ -33,7 +33,7 @@ from taleboard.storage.project_store import ProjectStore
 
 logging.getLogger("taleboard").setLevel(logging.INFO)  # Lambda only shows WARNING+ by default; this surfaces per-call timings
 
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 5
 CONTINUATION_MARGIN_MS = 2 * 60 * 1000
 BUSY_RETRY_MARGIN_S = 15
 FAILED_RETRY_DELAY_S = 60

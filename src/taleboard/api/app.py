@@ -5,15 +5,23 @@ Submitting a story stores it and queues a render job, then returns 202 straight 
 
 Imports nothing from taleboard.rendering -- loading the image models would add seconds to every cold start of the API Lambda.
 
+Every endpoint requires the shared X-API-Key header (see verify_api_key). It's a cost guard against stray visitors and bots, not real authentication -- the frontend ships the key in its JavaScript.
+
 Attributes:
     IMAGE_URL_EXPIRY_S: int - How long the image URLs handed to clients stay valid (in seconds).
+    API_KEY_HEADER: str - Header clients send the shared API key in.
+    API_KEY_PARAMETER_ENV: str - Environment variable naming the SSM parameter that holds the key.
     app: FastAPI - The FastAPI application.
     handler: Mangum - API Lambda entry point -- adapts API Gateway (HTTP API, payload v2.0) events to the app.
 """
+import hmac
+import os
 import uuid
 from datetime import datetime
 from functools import lru_cache
-from fastapi import Depends, FastAPI, HTTPException, status
+import boto3
+from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 from mangum import Mangum
 
@@ -23,7 +31,40 @@ from taleboard.schema.models import Project, Region, Shot
 from taleboard.storage.project_store import SHOT_INDEX_WIDTH, ProjectStore
 
 IMAGE_URL_EXPIRY_S = 3600
-app = FastAPI(title="TaleBoard API")
+
+API_KEY_HEADER = "X-API-Key"
+API_KEY_PARAMETER_ENV = "TALEBOARD_API_KEY_PARAMETER"
+
+@lru_cache
+def get_api_key() -> str:
+    """
+    Reads the shared API key from SSM Parameter Store once per container, so warm invocations never call SSM.
+
+    Fails closed: if the parameter isn't configured, every request errors rather than going through unchecked.
+
+    Returns:
+        str - The expected API key.
+    """
+    return boto3.client("ssm").get_parameter(Name=os.environ[API_KEY_PARAMETER_ENV], WithDecryption=True)["Parameter"]["Value"]
+
+def verify_api_key(
+    api_key: str | None = Security(APIKeyHeader(name=API_KEY_HEADER, auto_error=False)),
+    expected: str = Depends(get_api_key),
+) -> None:
+    """
+    Rejects a request unless it carries the shared API key. Applied to every endpoint.
+
+    Arguments:
+        api_key: str - The key the client sent, if any.
+        expected: str - The key it must match.
+
+    Raises:
+        HTTPException - 401 if the key is missing or wrong.
+    """
+    if api_key is None or not hmac.compare_digest(api_key.encode(), expected.encode()):  # Constant-time, so response timing doesn't leak the key
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key", headers={"WWW-Authenticate": "APIKey"})
+
+app = FastAPI(title="TaleBoard API", dependencies=[Depends(verify_api_key)])
 
 @lru_cache
 def get_store() -> ProjectStore:
