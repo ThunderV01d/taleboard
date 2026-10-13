@@ -455,6 +455,37 @@ class ProjectStore:
             ExpressionAttributeValues={":status": status.value, ":error": error, ":job_id": job_id},
         )
 
+
+    def fail_unfinished_job(self, project_id: str, job_id: str, error: str) -> bool:
+        """
+        Marks a render job as failed -- but only if it's still the project's current job and hasn't finished.
+
+        A job that completed (or failed, or was replaced by a resubmitted story) is left exactly as it is.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique render job ID.
+            error: str - Why the job failed.
+
+        Returns:
+            bool - True if the job was marked failed; False if it had already finished or been superseded.
+        """
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": "METADATA"},
+                UpdateExpression="SET #status = :failed, #error = :error REMOVE lease_until",
+                ConditionExpression="job_id = :job_id AND #status IN (:pending, :in_progress)",
+                ExpressionAttributeNames={"#status": "status", "#error": "error"},
+                ExpressionAttributeValues={
+                    ":failed": ProjectStatus.FAILED.value, ":error": error, ":job_id": job_id,
+                    ":pending": ProjectStatus.PENDING.value, ":in_progress": ProjectStatus.IN_PROGRESS.value,
+                },
+            )
+            return True
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+
     def save_breakdown(self, project_id: str, characters: dict[str, Character], shots: list[Shot]) -> None:
         """
         Saves a story's breakdown as the job's checkpoint -- the cast, then every (unrendered) shot, then shot_count.

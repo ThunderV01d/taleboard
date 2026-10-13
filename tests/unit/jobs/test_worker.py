@@ -5,6 +5,9 @@ Runs against moto's fakes of DynamoDB, S3 and SQS (see tests/unit/conftest.py), 
 """
 import io
 import json
+import os
+import boto3
+from moto import mock_aws
 from types import SimpleNamespace
 
 import pytest
@@ -299,7 +302,7 @@ def test_handler_fails_a_job_straight_away_on_bad_input(store, monkeypatch):
 
 def test_handler_retries_a_transient_failure_and_frees_the_job(store, monkeypatch):
     """
-    Verifies that a transient failure is re-raised (so SQS redelivers it) with the lease released for the retry.
+    Verifies that a transient failure is re-raised (so SQS redelivers it) with the lease released, and the message set to come back after FAILED_RETRY_DELAY_S rather than the full visibility timeout.
 
     Arguments:
         store: ProjectStore - Fake-backed store.
@@ -307,12 +310,14 @@ def test_handler_retries_a_transient_failure_and_frees_the_job(store, monkeypatc
     """
     pid = _submit(store)
     monkeypatch.setattr(worker, "run_job", _failing_run_job(RuntimeError("Bedrock timed out")))
-
+    retries = []
+    monkeypatch.setattr(JobQueue, "retry_after", lambda self,receipt_handle,delay_s: retries.append((receipt_handle, delay_s)))
     with pytest.raises(RuntimeError):
         worker.handler(_sqs_event(pid, attempt=1), _CONTEXT)
 
     assert store.get_project(pid).status == ProjectStatus.IN_PROGRESS
     assert store.claim_job(pid, "job-1") is True
+    assert retries == [("receipt-1", worker.FAILED_RETRY_DELAY_S)]
 
 
 def test_handler_fails_a_job_after_the_last_attempt(store, monkeypatch):
@@ -349,3 +354,34 @@ def test_handler_retries_a_busy_delivery_just_after_the_lease_expires(store, mon
     [(receipt_handle, delay_s)] = retries
     assert receipt_handle == "receipt-1"
     assert JOB_LEASE_SECONDS <= delay_s <= JOB_LEASE_SECONDS + worker.BUSY_RETRY_MARGIN_S
+
+def test_the_together_key_is_loaded_from_parameter_store(aws, monkeypatch):
+    """
+    Verifies that the worker reads the Together AI key from SSM Parameter Store when one is configured.
+
+    Arguments:
+        aws: tuple[ProjectStore,JobQueue] - The shared fakes (provides fake credentials and an active moto mock).
+        monkeypatch: pytest.MonkeyPatch - Used to set and clear environment variables.
+    """
+    boto3.client("ssm").put_parameter(Name="/taleboard/together-api-key", Value="secret-key", Type="SecureString")
+    monkeypatch.setenv(worker.TOGETHER_KEY_PARAMETER_ENV, "/taleboard/together-api-key")
+    monkeypatch.delenv("TOGETHER_API_KEY", raising=False)
+
+    worker.load_together_key()
+
+    assert os.environ["TOGETHER_API_KEY"] == "secret-key"
+
+
+def test_an_existing_together_key_is_left_alone(monkeypatch):
+    """
+    Verifies that a key already in the environment (eg:- from .env locally) is used as-is, without calling SSM.
+
+    Arguments:
+        monkeypatch: pytest.MonkeyPatch - Used to set environment variables.
+    """
+    monkeypatch.setenv(worker.TOGETHER_KEY_PARAMETER_ENV, "/taleboard/together-api-key")
+    monkeypatch.setenv("TOGETHER_API_KEY", "from-dotenv")
+
+    worker.load_together_key()  # Would fail without credentials if it tried to call SSM
+
+    assert os.environ["TOGETHER_API_KEY"] == "from-dotenv"

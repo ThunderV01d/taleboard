@@ -1,0 +1,6 @@
+# Dependencies of the slim Lambdas (API, DLQ recovery), which CDK's PythonFunction bundles from src/
+# The worker is built from its own Dockerfile instead -- keep this list free of rendering packages
+pydantic>=2
+boto3
+fastapi
+mangum

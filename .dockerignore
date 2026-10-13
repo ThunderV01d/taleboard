@@ -1,0 +1,9 @@
+# Allowlist: only what the worker image needs enters the build context
+# Everything else -- above all .env, which holds real credentials -- is excluded, so it can never be baked into an image
+**
+!pyproject.toml
+!src/
+!docker/worker-entrypoint.sh
+!docker/worker.Dockerfile
+src/**/__pycache__
+src/**/*.egg-info

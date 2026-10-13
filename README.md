@@ -3,7 +3,7 @@
 
 Turn a story into an editable storyboard! You, the user, have control of framing, blocking, and pacing.
 
-**Status: in progress.** The full story → storyboard pipeline works end to end: a raw story goes in (cast extraction and shot breakdown, backed by AWS Bedrock) and a sequence of rendered shots comes out (per-character generation, background rendering, compositing, backed by Together AI). Both halves are tested together, with measured cost. The canvas editor and a persisted project data model are not yet built. See [Status](#status) below for exactly what works today.
+**Status: in progress.** The full story → storyboard pipeline works end to end and is deployed on AWS: a story submitted to the HTTP API is queued, broken down into shots (AWS Bedrock), rendered (Together AI) and persisted (DynamoDB + S3), with progress polled through the API. The canvas editor and the frontend are not yet built. See [Status](#status) below for exactly what works today.
 
 ## What this is
 
@@ -30,18 +30,28 @@ A story is broken into paragraphs, each paragraph into one or more shots, and ea
 - **Transient error handling** — FLUX.2-dev occasionally returns spurious 400 errors that succeed on an identical retry; these are retried automatically, on top of the SDK's own rate-limit/server-error retries.
 - **Tested end to end** — an integration test runs a real 8-paragraph story through the whole pipeline with nothing hand-built in between, checking alias resolution, character presence per paragraph, one reference image per character, and that every shot renders. A run costs about **$0.50** (~30 FLUX images plus ~9 Bedrock calls, ~95% of it image generation), so roughly a dozen stories of that length a month fit the £5 budget.
 
+**Working, deployed on AWS:**
+- **Persistence** — a project lives in a single DynamoDB table (metadata, cast, and one item per shot), with every generated image in S3. All three render caches (backgrounds, poses, character references) are persisted too, so a pose or background is never paid for twice, even across separate render jobs on the same project.
+- **HTTP API** — FastAPI on Lambda behind API Gateway: create and list projects, submit a story, poll render progress, and fetch shots and characters. Images are returned as presigned S3 URLs, so image bytes never pass through the API.
+- **Asynchronous render jobs** — submitting a story enqueues a job on SQS and returns immediately; a container-image worker Lambda breaks the story down and renders it. Jobs are safe to retry: a lease stops two workers rendering the same job, the breakdown is checkpointed so a retry never pays for it again, and a retry resumes from the first unrendered shot. A job that needs longer than one Lambda run (15 minutes) hands itself off to a fresh one.
+- **Failure handling** — bad input fails a job immediately; a transient failure is retried up to 3 times, a minute apart; a job that still can't finish lands on a dead-letter queue, where a recovery Lambda marks it failed (with a CloudWatch alarm). A failed project can take a new story, reusing everything already cached.
+- **Infrastructure as code** — the whole backend is one AWS CDK (Python) stack with least-privilege IAM: each Lambda can reach only what it uses, and deploys run through CDK's bootstrap roles rather than an admin user. The Together AI key lives in SSM Parameter Store, and the API is throttled as a cost guard.
+- **Tested end to end on AWS** — a real story renders completely through the deployed stack (13 shots in about 9 minutes, around $0.45).
+
 **Known issues:**
-- **Camera angle prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!)s
+- **Camera angle prompting is unreliable on character generation.** Camera angle prompting doesn't work great on characters (although it works on the background!).
 - **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight — true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point. This can be mitigated to some extent using the editor's skew control -- a cutout can be nudged towards a background's vanishing point when it's visibly off.
 - **Scene details occasionally leak into character cutouts.** Each character is generated alone on a blank background from their action text. When that text implies a large prop or a place ("gripping the tiller of a boat"), FLUX draws it too, and background removal leaves it as a faint box behind the character. The breakdown prompt asks for pose-only actions, which makes this rare but doesn't eliminate it.
 - **Close-ups can crop a character's head.** Close-up scaling uses the same anchoring as wider shots, so the top of a full-body cutout can fall outside the frame. Nothing is lost (the full cutout is kept), so the canvas editor will let the user simply reposition it.
 - **The same location can look different across shots** when its setting text is reworded. There is no location-identity mechanism yet, the equivalent of reference images for characters.
 - **Camera variety is limited.** Shots lean heavily towards medium, eye-level framing, even with the breakdown prompt asking for variety.
+- **Together AI sometimes doesn't respond.** Around one in five image requests from Lambda hang with no response. Each call gives up after 30 seconds and retries, so a hang costs about half a minute instead of failing the job, and hung requests aren't billed; it still makes a story slower than it should be.
+- **Cold starts are slow.** The first job after a quiet period waits about a minute for the worker to start, most likely Lambda loading the 2.4GB container image. Slimming the image is the planned fix.
 
 **Not yet built:**
-- A persisted `Project` container tying validated shots together as an ordered, editable whole (the domain pieces individual shots are built from — `Character`, `Region` — exist and are used directly by rendering; the project-level container around them doesn't yet).
 - The canvas editor (see [Planned: Canvas Editor](#planned-canvas-editor)).
-- Deployment (S3/CloudFront frontend, Lambda API + worker, SQS, DynamoDB, S3 storage for generated/uploaded images).
+- The frontend (planned for S3 + CloudFront).
+- Authentication on the API.
 
 ## Planned: Canvas Editor
 
@@ -73,48 +83,77 @@ Every layer, groups included, has an affine transform (position, scale, rotation
 
 4. **Rendering** — a shot's setting is always rendered as a standalone background first (square-framed), then, if the shot has character regions, each region is turned into a prompt (style, orientation, camera angle, and the character's own description/action), sent to Together AI's FLUX.2-dev (portrait-framed, to give a standing figure room to fit head-to-toe) along with that character's cached reference image for consistency, then background-removed, checked for an empty result (regenerated once, else left out and flagged), and deterministically converted to monochrome. A cache keyed on `(character, action, orientation, angle)` means a pose already generated anywhere in the project is never paid for twice; backgrounds are cached separately on `(setting, shot_size, angle)`. Finished character cutouts are scaled (by the region's size and the shot's overall shot size) and composited onto the rendered background at the position the shot breakdown specified. A shot with no character regions is simply its background render.
 
+5. **Persistence** — images are written to S3 before the DynamoDB item that points at them, so a crash never leaves a record pointing at a missing image. A shot's composite image key doubles as the job's progress marker: the status endpoint counts rendered shots by it, and a retried job resumes from the first shot without one. There's one source of truth, with no separate checkpoint to drift out of sync.
+
+6. **Request flow** — `POST /projects/{id}/story` stores the story in S3, marks the project pending, enqueues a job and returns 202 straight away. The worker Lambda claims a lease on the job, runs the breakdown (steps 0–3) unless an earlier attempt already saved it, renders every unrendered shot (step 4), and marks the project complete. Clients poll `GET /projects/{id}/status` for progress.
+
 ## Tech stack
 
 - **Python 3.13**, **Pydantic v2** for schema validation and JSON-schema generation
 - **AWS Bedrock** (Claude Haiku 4.5, via `boto3`) for structured LLM output — chosen specifically to demonstrate real AWS usage on a tight budget (native structured outputs avoid unreliable free-text JSON parsing, and Haiku 4.5's pricing keeps this well under £5/month at expected usage)
 - **Together AI** (FLUX.2-dev) for all image generation, both characters and backgrounds. This was chosen as it allows image-conditioned prompts -- an important feature to ensure character consistency across shots. It is also fairly cheap to run ($0.0154/image).
 - **Pillow**, plus an isnet-anime-based background removal model (rembg, run on CPU), for turning a raw generation into a clean, background-free, monochrome cutout
-- **pytest**, split into a fast/free **unit** tier (fake LLM/image calls, mocked `boto3`, runs in under a second) and a slower, real-cost **integration** tier (`pytest -m integration`) that actually calls Bedrock and Together AI
+- **AWS Lambda**, **API Gateway** (HTTP API), **SQS** (with a dead-letter queue), **DynamoDB**, **S3**, **SSM Parameter Store** and **CloudWatch**, all defined in one **AWS CDK** (Python) stack
+- **FastAPI** (served on Lambda via Mangum) for the API. The worker runs as a **Docker** container image, since the rendering dependencies are too big for a zipped Lambda; the background-removal model and compiled code are baked in, so a cold start never downloads anything
+- **pytest**, split into a fast/free **unit** tier (fake LLM/image calls, with DynamoDB, S3, SQS and SSM faked by **moto**; runs in seconds) and a slower, real-cost **integration** tier (`pytest -m integration`) that actually calls Bedrock and Together AI
 
 ## Project structure
 
 ```
-src/taleboard/
-├── schema/
-│   ├── enums.py          # closed vocabularies fed to the LLM (shot size, camera angle, orientation, ...)
-│   └── models.py         # Character, Region, and the rest of the domain model rendering builds on
-├── parsing/
-│   ├── llm_schemas.py     # Pydantic models for LLM input/output, including dynamic
-│   │                      # cast-constrained schema builders
-│   ├── prompts.py         # prompt templates for cast extraction and shot breakdown
-│   ├── cast_extraction.py
-│   ├── shot_breakdown.py
-│   ├── story_breakdown.py # whole story -> cast + ordered shots (top-level parsing entry point)
-│   └── bedrock_caller.py  # AWS Bedrock Converse API integration
-└── rendering/
-    ├── prompts.py          # builds FLUX prompts (style, orientation, camera angle, shot size) for a character or a background
-    ├── together_caller.py  # Together AI FLUX.2-dev image generation (separate character/background aspect ratios, reference-image conditioning)
-    ├── background_removal.py  # isnet-anime based background removal
-    ├── shot_renderer.py    # orchestrates reference images, character + background generation, caching, and monochrome conversion
-    ├── compositor.py       # pastes finished character cutouts onto a shot's canvas or rendered background
-    └── layout.py           # PositionCell/SizeInFrame/ShotSize -> pixel geometry
+src/
+├── requirements.txt          # runtime dependencies for the zipped API and dead-letter Lambdas
+└── taleboard/
+    ├── schema/
+    │   ├── enums.py          # closed vocabularies fed to the LLM (shot size, camera angle, orientation, ...)
+    │   └── models.py         # Project, Character, Shot, Region: the domain model everything builds on
+    ├── parsing/
+    │   ├── llm_schemas.py     # Pydantic models for LLM input/output, including dynamic
+    │   │                      # cast-constrained schema builders
+    │   ├── prompts.py         # prompt templates for cast extraction and shot breakdown
+    │   ├── cast_extraction.py
+    │   ├── shot_breakdown.py
+    │   ├── story_breakdown.py # whole story -> cast + ordered shots (top-level parsing entry point)
+    │   └── bedrock_caller.py  # AWS Bedrock Converse API integration
+    ├── rendering/
+    │   ├── prompts.py          # builds FLUX prompts (style, orientation, camera angle, shot size) for a character or a background
+    │   ├── together_caller.py  # Together AI FLUX.2-dev image generation (separate character/background aspect ratios, reference-image conditioning)
+    │   ├── background_removal.py  # isnet-anime based background removal
+    │   ├── shot_renderer.py    # orchestrates reference images, character + background generation, caching, and monochrome conversion
+    │   ├── compositor.py       # pastes finished character cutouts onto a shot's canvas or rendered background
+    │   └── layout.py           # PositionCell/SizeInFrame/ShotSize -> pixel geometry
+    ├── storage/
+    │   ├── project_store.py    # DynamoDB + S3 persistence: projects, cast, shots, job leases, images, presigned URLs
+    │   └── caches.py           # persistent versions of the three render caches
+    ├── jobs/
+    │   ├── queue.py            # SQS job queue (enqueue, delayed redelivery)
+    │   ├── worker.py           # worker Lambda: claims a job, breaks the story down, renders shots, retries and resumes
+    │   └── dead_letters.py     # recovery Lambda: marks dead-lettered jobs failed
+    └── api/
+        └── app.py              # FastAPI app (served on Lambda via Mangum)
+
+docker/
+├── worker.Dockerfile           # worker container image: rendering stack + baked background-removal model
+└── worker-entrypoint.sh        # copies the precompiled numba cache into /tmp before starting the Lambda runtime
+
+infra/                          # AWS CDK app (Python): one stack for the whole backend
+├── app.py
+├── taleboard_stack.py
+└── cdk.json                    # CDK settings, incl. the allowed CORS origin
 
 tests/
-├── conftest.py             # loads .env credentials before any test runs
-├── unit/parsing/           # fast, free, no AWS calls
-├── unit/rendering/         # fast, free, no Together AI calls
-├── integration/parsing/    # real Bedrock calls — costs money, needs credentials
-└── integration/rendering/  # real Together AI calls — costs money, needs an API key
-├── integration/test_story_to_render_live.py  # full story -> rendered shots, with cost logging
+├── conftest.py                 # loads .env credentials before any test runs
+├── unit/                       # fast, free, no real AWS or Together AI calls
+│   ├── conftest.py             # moto-backed DynamoDB/S3/SQS fakes shared by the storage, jobs and API tests
+│   └── parsing/  rendering/  storage/  jobs/  api/
+└── integration/                # real calls: costs money, needs credentials
+    ├── parsing/                # real Bedrock calls
+    ├── rendering/              # real Together AI calls
+    └── test_story_to_render_live.py  # full story -> rendered shots, with cost logging
 ```
 
 ## Running it
 
+### Locally
 Requires an AWS account with Bedrock model access granted for Claude Haiku 4.5 in your chosen region, local AWS credentials boto3 can find (e.g. via `aws configure`), and a Together AI API key (`TOGETHER_API_KEY`) for image generation. Put `TOGETHER_API_KEY` in a `.env` file at the repo root; the tests load it automatically (see `tests/conftest.py`).
 
 ```bash
@@ -123,4 +162,25 @@ python -m pytest -m "not integration"   # fast, free
 python -m pytest -m integration         # real Bedrock + Together AI calls
 python -m pytest tests/integration/test_story_to_render_live.py -m integration -s   # full pipeline, ~$0.50 per run
 ```
+
 Output (rendered shots, shots.json, run_log.json with costs, and a contact sheet) is written to tests/integration/output/e2e/, which is git-ignored.
+
+### Deploying to AWS
+Needs Docker running (the worker image and Lambda packages are built locally), Node.js for the CDK CLI, and Bedrock access to Claude Haiku 4.5 in eu-west-2. Set your own AWS account ID in `infra/app.py`, and store your Together AI key in SSM Parameter Store as a SecureString named `/taleboard/together-api-key`.
+
+```bash
+npm install -g aws-cdk
+pip install -r infra/requirements.txt
+cd infra
+cdk bootstrap # once per account and region
+cdk deploy # prints the API URL
+```
+
+Then, with `$API` set to that URL and `$PROJECT_ID` to the ID the first call returns:
+
+```bash
+curl -X POST $API/projects -H "content-type: application/json" -d '{"name": "My story"}'   # returns the project_id
+curl -X POST $API/projects/$PROJECT_ID/story -H "content-type: application/json" -d '{"story": "..."}'
+curl $API/projects/$PROJECT_ID/status   # poll until "complete"
+curl $API/projects/$PROJECT_ID/shots    # shots, with presigned image URLs
+```

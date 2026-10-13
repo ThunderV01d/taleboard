@@ -8,12 +8,14 @@ Imports nothing from taleboard.rendering -- loading the image models would add s
 Attributes:
     IMAGE_URL_EXPIRY_S: int - How long the image URLs handed to clients stay valid (in seconds).
     app: FastAPI - The FastAPI application.
+    handler: Mangum - API Lambda entry point -- adapts API Gateway (HTTP API, payload v2.0) events to the app.
 """
 import uuid
 from datetime import datetime
 from functools import lru_cache
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
+from mangum import Mangum
 
 from taleboard.jobs.queue import JobQueue
 from taleboard.schema.enums import CameraAngle, ProjectStatus, ShotSize
@@ -50,7 +52,7 @@ class ProjectIn(BaseModel):
     Attributes:
         name: str - Name of the project.
     """
-    name: str = Field(min_lenght=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
 
 class StoryIn(BaseModel):
     """
@@ -365,3 +367,6 @@ def list_characters(project_id: str, store: ProjectStore = Depends(get_store)) -
         )
         for character_id, character in store.list_characters(project_id).items()
     ]
+
+# lifespan="off": startup/shutdown hooks don't map onto Lambda's invoke model, and the clients they'd create are already cached per container by get_store/get_queue
+handler = Mangum(app, lifespan="off")

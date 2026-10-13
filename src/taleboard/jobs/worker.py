@@ -12,10 +12,15 @@ Attributes:
     MAX_ATTEMPTS: int - Deliveries before a failing job is marked failed. Must match the queue's maxReceiveCount.
     CONTINUATION_MARGIN_MS: int - Time (in milliseconds) that must remain to start rendering another shot -- any less, and the job is handed over.
     BUSY_RETRY_MARGIN_S: int - Extra seconds added after a lease expires before a busy delivery is retried, so it never arrives a moment too early.
+    FAILED_RETRY_DELAY_S: int - Seconds before a transiently failed attempt is delivered again (the full visibility timeout would idle for 16 minutes).
+    TOGETHER_KEY_PARAMETER_ENV: str - Environment variable naming the SSM parameter that holds the Together API key.
     BreakDown: Callable[[str],StoryBreakdown] - Story breakdown function (usually break_down_story, or mocked during testing).
     Render: Callable[...,RenderResult] - Shot rendering function (usually render_shot, or mocked during testing).
 """
 import logging
+import os
+import boto3
+
 from enum import Enum
 from typing import Callable
 
@@ -26,9 +31,13 @@ from taleboard.schema.enums import ProjectStatus
 from taleboard.storage.caches import PersistentBackgroundCache, PersistentPoseCache, PersistentReferenceCache
 from taleboard.storage.project_store import ProjectStore
 
+logging.getLogger("taleboard").setLevel(logging.INFO)  # Lambda only shows WARNING+ by default; this surfaces per-call timings
+
 MAX_ATTEMPTS = 3
 CONTINUATION_MARGIN_MS = 2 * 60 * 1000
 BUSY_RETRY_MARGIN_S = 15
+FAILED_RETRY_DELAY_S = 60
+TOGETHER_KEY_PARAMETER_ENV = "TOGETHER_API_KEY_PARAMETER"
 
 BreakDown = Callable[[str], StoryBreakdown]
 Render = Callable[..., RenderResult]
@@ -122,6 +131,16 @@ def run_job(
     store.finish_job(project_id, job_id, ProjectStatus.COMPLETE)
     return JobOutcome.COMPLETE
 
+def load_together_key() -> None:
+    """
+    Puts the Together AI API key into the environment (where the Together client looks for it), reading it from SSM Parameter Store.
+
+    Runs once per Lambda container -- warm invocations find the key already set. Does nothing locally, where the key comes from .env instead.
+    """
+    parameter = os.environ.get(TOGETHER_KEY_PARAMETER_ENV)
+    if parameter and "TOGETHER_API_KEY" not in os.environ:
+        os.environ["TOGETHER_API_KEY"] = boto3.client("ssm").get_parameter(Name=parameter, WithDecryption=True)["Parameter"]["Value"]
+
 
 def handler(event: dict, context) -> None:
     """
@@ -133,6 +152,7 @@ def handler(event: dict, context) -> None:
         event: dict - SQS event.
         context: LambdaContext - Lambda context, used for the time remaining.
     """
+    load_together_key()
     store, queue = ProjectStore.from_env(), JobQueue.from_env()
     for record in event["Records"]:
         project_id, job_id = parse_message(record["body"])
@@ -149,4 +169,6 @@ def handler(event: dict, context) -> None:
                 store.finish_job(project_id, job_id, ProjectStatus.FAILED, error=str(e)[:500])
             else:
                 store.release_job(project_id, job_id)
+                # The lease is already released, so there's nothing to wait out -- retry soon rather than after the full visibility timeout
+                queue.retry_after(record["receiptHandle"], FAILED_RETRY_DELAY_S)
                 raise

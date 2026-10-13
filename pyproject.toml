@@ -4,10 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2",
-    "boto3",
-    "together",
-    "rembg[cpu]",
-    "fastapi"
+    "boto3"
 ]
 
 [build-system]
@@ -24,4 +21,6 @@ markers = [
 testpaths = ["tests"]
 
 [project.optional-dependencies]
-dev = ["pytest", "python-dotenv", "moto[dynamodb,s3,sqs]", "httpx"]
+api = ["fastapi", "mangum"]
+worker = ["together", "rembg[cpu]"]
+dev = ["taleboard[api,worker]", "pytest", "python-dotenv", "moto[dynamodb,s3,sqs,ssm]", "httpx"]

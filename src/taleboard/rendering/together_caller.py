@@ -11,6 +11,8 @@ Attributes:
     CHARACTER_HEIGHT: int - Height of character generation images.
     BACKGROUND_WIDTH: int - Width of background generation images.
     BACKGROUND_HEIGHT: int - Height of background generation images.
+    REQUEST_TIMEOUT: httpx.Timeout - Per-request timeout; a response that hasn't started by then is treated as a stall.
+    REQUEST_RETRIES: int - Number of times the SDK retries a timed-out or failed request.
     _client: Together - A Together AI client.
     BAD_REQUEST_RETRIES: int - Number of times a bad request should retry before giving up.
     RETRY_BACKOFF_S: float - How long we should wait before retrying a bad request.
@@ -18,7 +20,8 @@ Attributes:
 import base64
 import time
 import logging
-from together import Together, BadRequestError
+import httpx
+from together import Together, BadRequestError, DefaultHttpxClient
 
 MODEL_ID = "black-forest-labs/FLUX.2-dev"
 
@@ -29,6 +32,10 @@ CHARACTER_HEIGHT = 2048
 # A square aspect ratio is what we expect from a storyboard shot
 BACKGROUND_WIDTH = 1024
 BACKGROUND_HEIGHT = 1024
+
+# Normal generations take 6-18 seconds; a response that hasn't started after 30 seconds has stalled, so the SDK gives up and retries sooner
+REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+REQUEST_RETRIES = 3
 
 _client: Together | None = None
 
@@ -43,7 +50,12 @@ def _get_client() -> Together:
     """
     global _client
     if _client is None:
-        _client = Together() # Reads TOGETHER_API_KEY from the environment
+        _client = Together(  # Reads TOGETHER_API_KEY from the environment
+            timeout=REQUEST_TIMEOUT,
+            max_retries=REQUEST_RETRIES,
+            # A fresh connection per request
+            http_client=DefaultHttpxClient(limits=httpx.Limits(max_keepalive_connections=0)),
+        )
     return _client
 
 def _encode_reference_images(reference_images: list[bytes]) -> list[str]:
@@ -127,7 +139,10 @@ def _generate_with_retry(kwargs: dict, sleep=time.sleep):
     """
     for attempt in range(BAD_REQUEST_RETRIES + 1):
         try:
-            return _get_client().images.generate(**kwargs)
+            start = time.monotonic()
+            response = _get_client().images.generate(**kwargs)
+            logging.getLogger(__name__).info("Together generation took %.1fs", time.monotonic() - start)
+            return response
         except BadRequestError as e:
             if attempt == BAD_REQUEST_RETRIES:
                 raise
