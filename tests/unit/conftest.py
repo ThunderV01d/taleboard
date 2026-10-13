@@ -53,6 +53,7 @@ def aws(monkeypatch):
         monkeypatch.setenv("TALEBOARD_BUCKET", BUCKET)
         monkeypatch.setenv("TALEBOARD_QUEUE_URL", queue_url)
         monkeypatch.setenv("AWS_REGION", REGION)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)  # Region-less clients (eg:- the worker's SSM client) read this one, not AWS_REGION
         yield ProjectStore(TABLE, BUCKET, REGION), JobQueue(queue_url, REGION)
 
 
