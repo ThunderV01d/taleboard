@@ -150,9 +150,9 @@ def test_shot_size_defaults_to_medium_and_leaves_old_geometry_unchanged():
     """
     Verifies that leaving out the shot size gives exactly the same target height as passing MEDIUM.
 
-    A caller that hasn't been updated to pass the shot size through must get exactly the old geometry.
+    A caller that hasn't been updated to pass the shot size through must get exactly the old geometry. Uses the bottom row, which isn't scaled for depth.
     """
-    region = _region(PositionCell.MID_CENTER, SizeInFrame.MEDIUM)
+    region = _region(PositionCell.BOTTOM_CENTER, SizeInFrame.MEDIUM)
     with_default = resolve_placement(region)
     with_explicit_medium = resolve_placement(region, shot_size=ShotSize.MEDIUM)
 
@@ -234,3 +234,35 @@ def test_paste_box_scales_cutout_height_to_the_target_height_for_a_given_shot_si
     )
 
     assert scaled_height == placement.target_height
+
+def test_every_row_stands_its_feet_on_the_floor_in_the_lower_part_of_the_frame():
+    """
+    Verifies that every row's ground line is in the lower part of the frame, where an eye-level background's floor is.
+
+    Regression guard: the old mid row put feet two-thirds of the way down, so characters stood on desks and beds or floated.
+    """
+    for position in PositionCell:
+        assert resolve_placement(_region(position)).anchor_y > CANVAS_SIZE * 0.7
+
+
+def test_farther_rows_draw_the_same_character_smaller():
+    """
+    Verifies that rows further from the camera (higher up the floor) draw the same region smaller.
+    """
+    top = resolve_placement(_region(PositionCell.TOP_CENTER, SizeInFrame.LARGE))
+    mid = resolve_placement(_region(PositionCell.MID_CENTER, SizeInFrame.LARGE))
+    bottom = resolve_placement(_region(PositionCell.BOTTOM_CENTER, SizeInFrame.LARGE))
+    assert top.target_height < mid.target_height < bottom.target_height
+
+
+def test_no_combination_ever_puts_a_head_above_the_frame():
+    """
+    Verifies that for every position, size and shot size, the top of the figure stays inside the frame.
+
+    Regression guard: a large character in a close-up used to reach far above the top edge, cutting the head off.
+    """
+    for position in PositionCell:
+        for size in SizeInFrame:
+            for shot_size in ShotSize:
+                _, paste_y, _, _ = resolve_paste_box(_region(position, size), cutout_width=100, cutout_height=300, shot_size=shot_size)
+                assert paste_y >= 0

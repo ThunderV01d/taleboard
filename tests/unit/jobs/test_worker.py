@@ -11,12 +11,14 @@ from moto import mock_aws
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from PIL import Image
 
 from taleboard.jobs import worker
 from taleboard.jobs.worker import JobBusyError, JobOutcome, run_job
 from taleboard.jobs.queue import JobQueue
 from taleboard.storage.project_store import JOB_LEASE_SECONDS
+from taleboard.parsing.llm_schemas import LLMCastOutput
 from taleboard.parsing.story_breakdown import StoryBreakdown
 from taleboard.rendering.shot_renderer import render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ProjectStatus, ShotSize, SizeInFrame
@@ -385,3 +387,24 @@ def test_an_existing_together_key_is_left_alone(monkeypatch):
     worker.load_together_key()  # Would fail without credentials if it tried to call SSM
 
     assert os.environ["TOGETHER_API_KEY"] == "from-dotenv"
+
+def test_handler_retries_an_llm_response_that_failed_validation(store, monkeypatch):
+    """
+    Verifies that a pydantic ValidationError (an LLM response that failed validation) gets the normal retries, even though pydantic makes it a ValueError -- only real bad input fails a job straight away.
+
+    Arguments:
+        store: ProjectStore - Fake-backed store.
+        monkeypatch: pytest.MonkeyPatch - Used to swap in a failing run_job and record the retry.
+    """
+    try:
+        LLMCastOutput.model_validate({})
+    except ValidationError as e:
+        validation_error = e
+    pid = _submit(store)
+    monkeypatch.setattr(worker, "run_job", _failing_run_job(validation_error))
+    monkeypatch.setattr(JobQueue, "retry_after", lambda self, receipt_handle, delay_s: None)
+
+    with pytest.raises(ValidationError):
+        worker.handler(_sqs_event(pid, attempt=1), _CONTEXT)
+
+    assert store.get_project(pid).status == ProjectStatus.IN_PROGRESS

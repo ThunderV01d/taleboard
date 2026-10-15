@@ -3,8 +3,11 @@ Unit tests for cast_extraction.
 
 Covers character ID assignment, conversion to domain characters and the empty-story guard. No LLM calls are made.
 """
+import json
 import pytest
-from taleboard.parsing.cast_extraction import assign_char_ids, to_domain_character, extract_cast
+from pydantic import ValidationError
+
+from taleboard.parsing.cast_extraction import CAST_RETRIES, assign_char_ids, to_domain_character, extract_cast
 from taleboard.parsing.llm_schemas import LLMCharacterDraft
 
 def test_assign_char_ids_no_duplicates():
@@ -102,3 +105,56 @@ def test_extract_cast_rejects_empty_story_before_calling_the_llm(story):
 
     with pytest.raises(ValueError, match="empty"):
         extract_cast(story, call_llm)
+
+def test_extract_cast_retries_a_cast_that_fails_validation_with_the_error():
+    """
+    Verifies that a cast failing validation (here, a description over the length limit) is sent back once with the error, and the fixed cast is accepted.
+    """
+    too_long = json.dumps({"characters": [{"name": "Marcus", "description": "x" * 301, "aliases": []}]})
+    fixed = json.dumps({"characters": [{"name": "Marcus", "description": "A tall man in his thirties.", "aliases": []}]})
+    responses = [too_long, fixed]
+    calls: list[str] = []
+
+    def call_llm(prompt: str) -> str:
+        """
+        Records the prompt and returns an overlong cast, then a valid one.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake LLM.
+
+        Returns:
+            str - Next canned response (JSON).
+        """
+        calls.append(prompt)
+        return responses[len(calls) - 1]
+
+    cast = extract_cast("Marcus waited.", call_llm)
+
+    assert len(calls) == 2
+    assert "300 characters" in calls[1]  # The retry prompt carries the validation error
+    assert cast["marcus"].description == "A tall man in his thirties."
+
+
+def test_extract_cast_gives_up_after_its_retries():
+    """
+    Verifies that a cast still failing validation after every retry raises, rather than looping or returning a broken cast.
+    """
+    too_long = json.dumps({"characters": [{"name": "Marcus", "description": "x" * 301, "aliases": []}]})
+    calls: list[str] = []
+
+    def call_llm(prompt: str) -> str:
+        """
+        Records the prompt and always returns an overlong cast.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake LLM.
+
+        Returns:
+            str - Overlong cast (JSON).
+        """
+        calls.append(prompt)
+        return too_long
+
+    with pytest.raises(ValidationError):
+        extract_cast("Marcus waited.", call_llm)
+    assert len(calls) == CAST_RETRIES + 1

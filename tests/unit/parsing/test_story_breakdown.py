@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from taleboard.parsing.llm_schemas import LLMCastOutput
+from taleboard.parsing.llm_schemas import LLMCastOutput, LLMJudgeOutput
 from taleboard.parsing.story_breakdown import break_down_story, split_paragraphs
 
 STORY = "Alice waved.\n\nBob waved back.\n\n\n\nThey walked off together."
@@ -21,6 +21,7 @@ CAST_RESPONSE = json.dumps({"characters": [
     {"name": "Bob", "description": "A tall bearded man.", "aliases": ["the tall man"]},
 ]})
 
+NOTHING_FLAGGED = json.dumps({"texts": []})
 
 def _shot_response(character_id: str, action: str) -> str:
     """
@@ -44,7 +45,7 @@ def _fake_make_caller(prompts: list[str]):
     """
     Builds a fake LLM caller builder, matching the MakeCaller signature.
 
-    The cast schema is answered with CAST_RESPONSE, and each paragraph call with the next one-shot response. Every prompt is recorded.
+    The cast schema is answered with CAST_RESPONSE, and each paragraph call with the next one-shot response. Every prompt is recorded. The contamination judge is answered with "nothing flagged", and its prompts aren't recorded, so these tests see only cast and paragraph calls.
 
     Arguments:
         prompts: list[str] - List that every prompt sent to the fake LLM is appended to.
@@ -75,6 +76,8 @@ def _fake_make_caller(prompts: list[str]):
             Returns:
                 str - Canned response (JSON).
             """
+            if schema_model is LLMJudgeOutput:
+                return NOTHING_FLAGGED
             prompts.append(prompt)
             return CAST_RESPONSE if schema_model is LLMCastOutput else next(shot_responses)
         return call_llm

@@ -63,6 +63,23 @@ class LLMShotDraft(BaseModel):
             raise ValueError("duration_s must be greater than 0 and at most 60")
         return v
 
+class LLMJudgedText(BaseModel):
+    """
+    The contamination judge's verdict on one piece of text.
+    """
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    flagged: bool
+    reason: str
+    rewritten_text: str
+
+class LLMJudgeOutput(BaseModel):
+    """
+    The contamination judge's verdicts, one per piece of text it was given.
+    """
+    model_config = ConfigDict(extra="forbid")
+    texts: list[LLMJudgedText]
+
 def build_region_model(cast_ids: list[str]) -> type[LLMRegion]:
     """
     Builds a subclass of LLMRegion whose character_id can only be one of the given cast_ids at runtime.

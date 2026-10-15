@@ -23,6 +23,7 @@ import boto3
 
 from enum import Enum
 from typing import Callable
+from pydantic import ValidationError
 
 from taleboard.jobs.queue import JobQueue, parse_message
 from taleboard.parsing.story_breakdown import StoryBreakdown, break_down_story
@@ -165,7 +166,10 @@ def handler(event: dict, context) -> None:
             raise
         except Exception as e:
             logging.getLogger(__name__).exception("Render job %s failed (attempt %d of %d)", job_id, attempt, MAX_ATTEMPTS)
-            if isinstance(e, ValueError) or attempt >= MAX_ATTEMPTS:  # ValueError means bad input (eg:- an empty story) -- retrying can't fix it
+            # ValueError means bad input (eg:- an empty story) -- retrying can't fix it. Pydantic's ValidationError is also a ValueError,
+            # but an LLM response failing validation can come out differently next time, so it gets the normal retries
+            bad_input = isinstance(e, ValueError) and not isinstance(e, ValidationError)
+            if bad_input or attempt >= MAX_ATTEMPTS:
                 store.finish_job(project_id, job_id, ProjectStatus.FAILED, error=str(e)[:500])
             else:
                 store.release_job(project_id, job_id)

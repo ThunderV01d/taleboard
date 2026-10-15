@@ -22,8 +22,10 @@ STYLE_PREFIX = (
     "Storyboard panel, pencil sketch, black and white line art, "
     "full body shot, entire body visible, head-to-toe, "
     "no shading or lighting, rough hand-drawn illustration style, simple white background, "
+    "a single figure alone, no other people, no room, walls, windows or scenery, "
+    "no signature, no text, no watermark, "
 )
- 
+
 NEGATIVE_PROMPT = ""
 
 MAX_SUBJECT_LENGTH = 500
@@ -86,6 +88,7 @@ def build_character_prompt(character: Character, region: Region, angle: CameraAn
 BACKGROUND_STYLE_PREFIX = (
     "Pencil sketch, black and white line art, filling full frame, "
     "environment establishing shot, no shading or lighting, rough hand-drawn illustration style, "
+    "no signature, no text, no watermark, "
 )
 
 BACKGROUND_NEGATIVE_PROMPT = ""

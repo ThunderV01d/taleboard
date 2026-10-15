@@ -2,16 +2,21 @@
 Manages the cast-extraction part of the pipeline.
 
 Includes helper functions to parse cast attributes.
+
+Attributes:
+    CAST_RETRIES: int - Number of times a cast that fails validation is sent to the model with the error, before giving up.
 """
 import re
-import json
 
 from collections import Counter
+from pydantic import ValidationError
 
 from taleboard.parsing.bedrock_caller import CallLLM
 from taleboard.schema.models import Character
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput
 from taleboard.parsing.prompts import build_cast_extraction_prompt
+
+CAST_RETRIES = 1
 
 def slugify(name: str) -> str:
     """
@@ -84,10 +89,33 @@ def extract_cast(
     if not story_text.strip():
         raise ValueError("Story is empty -- there is nothing to extract a cast from.")
     prompt = build_cast_extraction_prompt(story_text)
-    response_text = call_llm(prompt)
-    data = json.loads(response_text)
-    output = LLMCastOutput.model_validate(data) # Ensures output validation against our model
-    return assign_char_ids(output.characters)
+    for attempt in range(CAST_RETRIES + 1):
+        response_text = call_llm(prompt)
+        try:
+            output = LLMCastOutput.model_validate_json(response_text) # Ensures output validation against our model (malformed JSON fails here too)
+            return assign_char_ids(output.characters)
+        except ValidationError as e:
+            if attempt == CAST_RETRIES:
+                raise
+            prompt = _build_cast_retry_prompt(response_text, e)
+
+def _build_cast_retry_prompt(response_text: str, error: ValidationError) -> str:
+    """
+    Builds the prompt for the LLM to fix a cast that failed validation (eg:- a description over the length limit).
+
+    Arguments:
+        response_text: str - The model's failing response.
+        error: ValidationError - Why it failed.
+
+    Returns:
+        str - Prompt for the LLM to retry the cast.
+    """
+    return (
+        "The cast list you sent failed validation. Fix it and return the whole list again, in the same JSON shape, "
+        "under a \"characters\" key. Keep every character; shorten any description that is too long, keeping only how "
+        f"the character looks.\n\nCast you sent:\n{response_text}\n\nError:\n{error}"
+    )
+
 
 def to_domain_character(draft: LLMCharacterDraft, appearance_reference: str | None = None) -> Character:
     """

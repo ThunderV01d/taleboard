@@ -11,7 +11,7 @@ import json
 
 from taleboard.parsing.cast_extraction import assign_char_ids
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, build_shot_draft_model
-from taleboard.parsing.shot_breakdown import get_shots_for_paragraph, ShotResult, to_domain_shot
+from taleboard.parsing.shot_breakdown import find_cast_mentions, get_shots_for_paragraph, ShotResult, to_domain_shot
 
 
 def _make_cast() -> dict[str, LLMCharacterDraft]:
@@ -270,3 +270,80 @@ def test_aliases_are_required_for_the_llm_but_optional_in_python():
     schema = LLMCastOutput.model_json_schema()
     assert "aliases" in schema["$defs"]["LLMCharacterDraft"]["required"]
     assert LLMCharacterDraft(name="Alice", description="...").aliases == []
+
+def test_find_cast_mentions_catches_names_possessives_and_aliases_but_not_common_words():
+    """
+    Verifies that a setting naming a cast member is caught by name (possessive included) or multi-word alias, and that a single-word name doesn't match an ordinary lowercase word.
+    """
+    cast = {
+        "eleanor": LLMCharacterDraft(name="Eleanor", description="...", aliases=["the girl"]),
+        "rose": LLMCharacterDraft(name="Rose", description="..."),
+    }
+
+    assert find_cast_mentions("golden light in Eleanor's hands", cast) == ["Eleanor"]
+    assert find_cast_mentions("The girl's face is pressed against the glass", cast) == ["the girl"]
+    assert find_cast_mentions("a garden of rose bushes", cast) == []
+    assert find_cast_mentions("an empty hallway", cast) == []
+
+
+def test_a_setting_naming_a_cast_member_is_retried_with_the_reason():
+    """
+    Verifies that a schema-valid shot whose setting names a cast member is sent back for a retry, with an error naming who was mentioned.
+    """
+    cast = _make_cast()
+    leaky = json.loads(VALID_SHOT_RESPONSE)
+    leaky["shots"][0]["setting"] = "a quiet street corner where Alice stands waiting"
+    responses = [json.dumps(leaky), VALID_SHOT_RESPONSE]
+    calls: list[str] = []
+
+    def fake_call_llm(prompt: str) -> str:
+        """
+        Records the prompt and returns a shot whose setting names Alice, then a clean one.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake LLM.
+
+        Returns:
+            str - Next canned response (JSON).
+        """
+        calls.append(prompt)
+        return responses[len(calls) - 1]
+
+    results = get_shots_for_paragraph(paragraph="Alice waits.", cast=cast, previous_shot=None, call_llm=fake_call_llm)
+
+    assert len(calls) == 2
+    assert "'Alice'" in calls[1]  # The retry prompt says who was mentioned
+    assert results[0].needs_review is False
+    assert results[0].shot.setting == "a quiet street corner"
+
+def test_an_action_naming_another_cast_member_is_retried_but_a_character_may_name_themselves():
+    """
+    Verifies that a region whose action names a different cast member is sent back for a retry, while one naming its own character passes.
+    """
+    cast = _make_cast()
+    leaky = json.loads(VALID_SHOT_RESPONSE)
+    leaky["shots"][0]["regions"][0]["action"] = "waving at Bob"
+    clean = json.loads(VALID_SHOT_RESPONSE)
+    clean["shots"][0]["regions"][0]["action"] = "waving, Alice's hand raised high"
+    responses = [json.dumps(leaky), json.dumps(clean)]
+    calls: list[str] = []
+
+    def fake_call_llm(prompt: str) -> str:
+        """
+        Records the prompt and returns an action naming Bob, then one naming only Alice herself.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake LLM.
+
+        Returns:
+            str - Next canned response (JSON).
+        """
+        calls.append(prompt)
+        return responses[len(calls) - 1]
+
+    results = get_shots_for_paragraph(paragraph="Alice waves.", cast=cast, previous_shot=None, call_llm=fake_call_llm)
+
+    assert len(calls) == 2
+    assert "'Bob'" in calls[1]
+    assert results[0].needs_review is False
+    assert results[0].shot.regions[0].action == "waving, Alice's hand raised high"

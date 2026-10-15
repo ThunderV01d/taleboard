@@ -3,6 +3,7 @@ Manages the shot composition, placing regions onto a background.
 
 Attributes:
     BACKGROUND_COLOR: tuple[int,int,int,int] - RGBA tuple for background colour. This is only used when there is no background image provided.
+    _ALPHA_THRESHOLD: int - Opacity (0-255) a pixel needs to count as part of the figure when trimming a cutout; skips background removal's faint edge noise.
 """
 
 import io
@@ -14,6 +15,24 @@ from taleboard.schema.enums import ShotSize
 from taleboard.schema.models import Region
 
 BACKGROUND_COLOR = (255, 255, 255, 255) # Solid white
+
+_ALPHA_THRESHOLD = 32
+
+
+def _trim_to_figure(cutout: Image.Image) -> Image.Image:
+    """
+    Crops a cutout to the figure in it, dropping the transparent padding background removal leaves around it.
+
+    Without this, sizing and placement apply to the whole generated canvas -- a figure filling half of it comes out half the intended size, standing on empty space above its anchor.
+
+    Arguments:
+        cutout: Image.Image - Cutout (RGBA).
+
+    Returns:
+        Image.Image - The cutout cropped to its visible figure; unchanged if it has nothing visible.
+    """
+    figure_box = cutout.getchannel("A").point(lambda alpha: 255 if alpha > _ALPHA_THRESHOLD else 0).getbbox()
+    return cutout.crop(figure_box) if figure_box else cutout
 
 
 def compose_shot(regions: list[Region], cutouts: dict[str, bytes], shot_size: ShotSize = ShotSize.MEDIUM, background: bytes | None = None) -> bytes:
@@ -43,7 +62,7 @@ def compose_shot(regions: list[Region], cutouts: dict[str, bytes], shot_size: Sh
         if cutout_bytes is None:
             continue
 
-        cutout = Image.open(io.BytesIO(cutout_bytes)).convert("RGBA")
+        cutout = _trim_to_figure(Image.open(io.BytesIO(cutout_bytes)).convert("RGBA"))
         paste_x, paste_y, scaled_width, scaled_height = resolve_paste_box(
             region, cutout.width, cutout.height, shot_size
         )

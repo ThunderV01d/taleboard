@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from taleboard.rendering.compositor import compose_shot
-from taleboard.rendering.layout import CANVAS_SIZE
+from taleboard.rendering.layout import CANVAS_SIZE, resolve_placement
 from taleboard.schema.enums import Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Region
 
@@ -196,7 +196,7 @@ def test_close_up_shot_size_makes_the_same_region_visibly_bigger():
 
     wide_result = compose_shot(regions=[region], cutouts=cutouts, shot_size=ShotSize.WIDE)
     close_up_result = compose_shot(regions=[region], cutouts=cutouts, shot_size=ShotSize.CLOSE_UP)
-    probe_point = (CANVAS_SIZE // 2, 200)
+    probe_point = (CANVAS_SIZE // 2, 400)
 
     assert _pixel(wide_result, *probe_point) == (255, 255, 255)
     assert _pixel(close_up_result, *probe_point) == (255, 0, 0)
@@ -259,3 +259,20 @@ def test_character_cutout_still_pastes_over_a_background_image():
     assert _pixel(result, CANVAS_SIZE // 2, CANVAS_SIZE * 2 // 3 - 10) == (255, 0, 0)
     # Outside any character's box, the background shows through -- not white
     assert _pixel(result, 0, 0) == GREEN[:3]
+
+def test_transparent_padding_below_a_figure_is_trimmed_so_its_feet_land_on_the_anchor():
+    """
+    Verifies that a cutout's transparent padding is trimmed before placing it, so the figure itself -- not the empty canvas around it -- stands on the region's anchor.
+
+    Real cutouts are the whole generated canvas, with the figure filling only part of it and empty space below the feet.
+    """
+    padded = Image.new("RGBA", (100, 200), (0, 0, 0, 0))
+    padded.paste(Image.new("RGBA", (100, 100), RED), (0, 0))  # Figure in the top half, transparent below
+    buffer = io.BytesIO()
+    padded.save(buffer, format="PNG")
+    region = _region("alice", PositionCell.BOTTOM_CENTER)
+
+    result = compose_shot(regions=[region], cutouts={"alice": buffer.getvalue()})
+    anchor = resolve_placement(region)
+
+    assert _pixel(result, anchor.anchor_x, anchor.anchor_y - 3) == (255, 0, 0)
