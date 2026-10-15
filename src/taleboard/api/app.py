@@ -176,7 +176,8 @@ class ShotOut(BaseModel):
     Attributes:
         shot_id: str - The shot's position in the story, zero-padded (eg:- "0007").
         description: str - What happens in the shot.
-        setting: str - The shot's location and environment.
+        location_id: str - ID of the location the shot takes place in. None for shots broken down before locations existed.
+        details: str - What looks different about the location in this shot ("" if nothing does).
         shot_size: ShotSize - Framing of the shot.
         angle: CameraAngle - Camera angle of the shot.
         duration_s: float - How long the shot lasts (in seconds).
@@ -189,7 +190,8 @@ class ShotOut(BaseModel):
     """
     shot_id: str
     description: str
-    setting: str
+    location_id: str | None
+    details: str
     shot_size: ShotSize
     angle: CameraAngle
     duration_s: float
@@ -261,7 +263,7 @@ def _shot_out(store: ProjectStore, index: int, shot: Shot) -> ShotOut:
     """
     return ShotOut(
         shot_id=f"{index:0{SHOT_INDEX_WIDTH}d}",
-        **shot.model_dump(include={"description","setting","shot_size","angle","duration_s","paragraph_index","regions","needs_review"}),
+        **shot.model_dump(include={"description","location_id","details","shot_size","angle","duration_s","paragraph_index","regions","needs_review"}),
         rendered=shot.generated_frame is not None,
         image_key=shot.generated_frame,
         image_url=store.presigned_url(shot.generated_frame, IMAGE_URL_EXPIRY_S) if shot.generated_frame else None

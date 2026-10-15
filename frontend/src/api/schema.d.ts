@@ -344,7 +344,8 @@ export interface components {
          *     Attributes:
          *         shot_id: str - The shot's position in the story, zero-padded (eg:- "0007").
          *         description: str - What happens in the shot.
-         *         setting: str - The shot's location and environment.
+         *         location_id: str - ID of the location the shot takes place in. None for shots broken down before locations existed.
+         *         details: str - What looks different about the location in this shot ("" if nothing does).
          *         shot_size: ShotSize - Framing of the shot.
          *         angle: CameraAngle - Camera angle of the shot.
          *         duration_s: float - How long the shot lasts (in seconds).
@@ -360,8 +361,10 @@ export interface components {
             shot_id: string;
             /** Description */
             description: string;
-            /** Setting */
-            setting: string;
+            /** Location Id */
+            location_id: string | null;
+            /** Details */
+            details: string;
             shot_size: components["schemas"]["ShotSize"];
             angle: components["schemas"]["CameraAngle"];
             /** Duration S */

@@ -42,6 +42,21 @@ class LLMCastOutput(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     characters: list[LLMCharacterDraft]
+
+class LLMLocationDraft(BaseModel):
+    """
+    Represents a location to be generated.
+    """
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    description: str = Field(max_length=300) # Drawn as the location's master plate, so the same length cap as a character's description
+
+class LLMLocationsOutput(BaseModel):
+    """
+    Represents every location in the story.
+    """
+    model_config = ConfigDict(extra="forbid")
+    locations: list[LLMLocationDraft] = Field(min_length=1) # Every shot needs a location, so a story with none can't be broken down
     
 class LLMShotDraft(BaseModel):
     """
@@ -49,7 +64,8 @@ class LLMShotDraft(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     description: str
-    setting: str = Field(max_length=300) # This needs to be concise, as we don't want the LLM to waffle on about the setting of the shot (and risk inventing details that don't exist)
+    location_id: str
+    details: str = Field(max_length=150) # Only small visible changes to the location -- anything longer is the LLM redescribing the place, which breaks consistency
     shot_size: ShotSize
     angle: CameraAngle
     duration_s: float # Shots realistically shouldn't last for longer than a minute
@@ -97,32 +113,36 @@ def build_region_model(cast_ids: list[str]) -> type[LLMRegion]:
         character_id: Literal[tuple(cast_ids)] #pyright: ignore[reportInvalidTypeForm]
     return ConstrainedRegion
 
-def build_shot_draft_model(cast_ids: list[str]) -> type[LLMShotDraft]:
+def build_shot_draft_model(cast_ids: list[str], location_ids: list[str] | None = None) -> type[LLMShotDraft]:
     """
-    Builds a subclass of LLMShotDraft whose regions are constrained to the real cast.
+    Builds a subclass of LLMShotDraft whose regions are constrained to the real cast, and whose location is constrained to the real locations.
     
     Arguments:
         cast_ids: list[str] - Cast (List of character IDs).
+        location_ids: list[str] - List of location IDs. Defaults to None (location_id isn't constrained).
     
     Returns:
         ConstrainedShotDraft - Constrained subclass of LLMShotDraft.
     """
     ConstrainedRegion = build_region_model(cast_ids)
+    LocationId = Literal[tuple(location_ids)] if location_ids else str #pyright: ignore[reportInvalidTypeForm]
     class ConstrainedShotDraft(LLMShotDraft):
+        location_id: LocationId #pyright: ignore[reportInvalidTypeForm]
         regions: list[ConstrainedRegion] #pyright: ignore[reportInvalidTypeForm]
     return ConstrainedShotDraft
 
-def build_paragraph_output_model(cast_ids: list[str]) -> type[BaseModel]:
+def build_paragraph_output_model(cast_ids: list[str], location_ids: list[str] | None = None) -> type[BaseModel]:
     """
-    Builds the full output model for one paragraph's shot-breakdown call, with a character_id constrained to the real cast.
+    Builds the full output model for one paragraph's shot-breakdown call, with a character_id constrained to the real cast and a location_id constrained to the real locations.
 
     Arguments:
         cast_ids: list[str] - Cast (List of character IDs).
+        location_ids: list[str] - List of location IDs. Defaults to None (location_id isn't constrained).
     
     Returns:
-        ParagraphOutput - full output model, with constrained character IDs.
+        ParagraphOutput - full output model, with constrained character and location IDs.
     """
-    ConstrainedShotDraft = build_shot_draft_model(cast_ids)
+    ConstrainedShotDraft = build_shot_draft_model(cast_ids, location_ids)
     class ParagraphOutput(BaseModel):
         model_config = ConfigDict(extra="forbid")
         shots: list[ConstrainedShotDraft] #pyright: ignore[reportInvalidTypeForm]

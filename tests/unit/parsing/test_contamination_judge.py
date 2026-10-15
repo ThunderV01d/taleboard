@@ -5,9 +5,9 @@ Uses fake LLM call functions, so no LLM calls are made.
 """
 import json
 
-from taleboard.parsing.cast_extraction import assign_char_ids
-from taleboard.parsing.contamination_judge import JudgeItem, judge_cast, judge_texts
-from taleboard.parsing.llm_schemas import LLMCharacterDraft
+from taleboard.parsing.cast_extraction import assign_ids
+from taleboard.parsing.contamination_judge import JudgeItem, judge_cast, judge_locations, judge_texts
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft
 from taleboard.parsing.prompts import build_contamination_judge_prompt
 from taleboard.parsing.shot_breakdown import MAX_RETRIES, get_shots_for_paragraph
 
@@ -19,7 +19,7 @@ def _make_cast() -> dict[str, LLMCharacterDraft]:
     Returns:
         dict[str,LLMCharacterDraft] - Mapping of character IDs ("alice", "bob") to character drafts.
     """
-    return assign_char_ids([
+    return assign_ids([
         LLMCharacterDraft(name="Alice", description="A woman in a green coat."),
         LLMCharacterDraft(name="Bob", description="A tall bearded man."),
     ])
@@ -40,19 +40,19 @@ def _verdicts(*flagged: tuple[str, str]) -> str:
     ]})
 
 
-def _shot(action: str, setting: str = "a quiet street") -> dict:
+def _shot(action: str, details: str = "") -> dict:
     """
-    Builds a raw one-region shot for Alice.
+    Builds a raw one-region shot for Alice, on a street.
 
     Arguments:
         action: str - Alice's action.
-        setting: str - The shot's setting. Defaults to "a quiet street".
+        details: str - The shot's details. Defaults to "" (none).
 
     Returns:
         dict - Raw shot, as the breakdown LLM returns it.
     """
     return {
-        "description": action, "setting": setting, "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
+        "description": action, "location_id": "street", "details": details, "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
         "regions": [{"character_id": "alice", "position": "mid_center", "size": "medium", "orientation": "towards_camera", "action": action}],
     }
 
@@ -61,7 +61,7 @@ def test_judge_texts_returns_rewrites_only_for_flagged_known_items():
     """
     Verifies that only flagged items the judge was actually given come back as rewrites -- unflagged, unknown and empty rewrites are ignored.
     """
-    items = [JudgeItem("a", "action", "hugging Bob", "Alice"), JudgeItem("b", "setting", "a quiet street")]
+    items = [JudgeItem("a", "action", "hugging Bob", "Alice"), JudgeItem("b", "details", "rain on the window")]
     response = json.dumps({"texts": [
         {"id": "a", "flagged": True, "reason": "second person", "rewritten_text": "arms curved forward"},
         {"id": "b", "flagged": False, "reason": "", "rewritten_text": ""},
@@ -145,16 +145,41 @@ def test_rewrites_stop_after_max_retries_and_keep_the_last_rewrite():
     assert results[0].needs_review is False
 
 
-def test_a_flagged_setting_is_rewritten():
+def test_flagged_details_are_rewritten_even_to_nothing():
     """
-    Verifies that a flagged setting is replaced by the judge's rewrite.
+    Verifies that flagged details are replaced by the judge's rewrite -- including an empty rewrite, when nothing visible was left (for every other kind of text, an empty rewrite is ignored).
     """
-    judge_responses = iter([_verdicts(("s0.setting", "an empty office at night")), _verdicts()])
-    raw = json.dumps({"shots": [_shot("waving", setting="an office at night, where she waits")]})
+    judge_responses = iter([_verdicts(("s0.details", "")), _verdicts()])
+    raw = json.dumps({"shots": [_shot("waving", details="an emotionally charged silence")]})
 
     results = get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: raw, lambda prompt: next(judge_responses))
 
-    assert results[0].shot.setting == "an empty office at night"
+    assert results[0].shot.details == ""
+    assert judge_texts([JudgeItem("a", "action", "hugging Bob", "Alice")], _make_cast(), lambda prompt: _verdicts(("a", ""))) == {}
+
+
+def test_empty_details_are_not_sent_to_the_judge():
+    """
+    Verifies that a shot with no details only has its actions judged.
+    """
+    judge_prompts: list[str] = []
+
+    def call_judge(prompt: str) -> str:
+        """
+        Records the prompt and flags nothing.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake judge.
+
+        Returns:
+            str - Judge response (JSON).
+        """
+        judge_prompts.append(prompt)
+        return _verdicts()
+
+    get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: json.dumps({"shots": [_shot("waving")]}), call_judge)
+
+    assert "s0.r0.action" in judge_prompts[0] and "s0.details" not in judge_prompts[0]
 
 
 def test_judge_cast_rewrites_a_flagged_description_and_ignores_an_invalid_rewrite():
@@ -186,3 +211,31 @@ def test_judge_cast_rewrites_a_flagged_description_and_ignores_an_invalid_rewrit
     assert cast["bob"].description == "A tall bearded man."
     assert len(judge_calls) == 2
     assert "alice.description" in judge_calls[1] and "bob.description" not in judge_calls[1]  # Only the rewrite is judged again
+
+
+def test_judge_locations_rewrites_a_flagged_location_description_labelled_as_a_place():
+    """
+    Verifies that a flagged location description is replaced, and that the judge is told which place (not character) the description belongs to.
+    """
+    judge_prompts: list[str] = []
+    responses = iter([_verdicts(("office.description", "a small office with a desk and a telephone")), _verdicts()])
+
+    def call_judge(prompt: str) -> str:
+        """
+        Records the prompt and returns the next canned verdicts.
+
+        Arguments:
+            prompt: str - Prompt sent to the fake judge.
+
+        Returns:
+            str - Judge response (JSON).
+        """
+        judge_prompts.append(prompt)
+        return next(responses)
+
+    locations = {"office": LLMLocationDraft(name="Office", description="the office where Alice waits for the call")}
+
+    judged = judge_locations(locations, _make_cast(), call_judge)
+
+    assert judged["office"].description == "a small office with a desk and a telephone"
+    assert "kind: location, place: Office" in judge_prompts[0]

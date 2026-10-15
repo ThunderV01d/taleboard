@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 
 from taleboard.rendering import together_caller
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, ReferenceImageCache, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, MasterPlateCache, ReferenceImageCache, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
-from taleboard.schema.models import Character, Region, Shot
+from taleboard.schema.models import Character, Location, Region, Shot
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -130,26 +130,27 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
     call_count = 0
     real_generate_background = together_caller.generate_background_image
 
-    def counting_generate_background(text: str, negative_text: str) -> bytes:
+    def counting_generate_background(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         """
         Counts the call and passes it through to the real background generation.
 
         Arguments:
             text: str - Prompt.
             negative_text: str - Negative prompt.
+            reference_images: list[bytes] - The location's master plate. Defaults to None (for the master plate itself).
 
         Returns:
             bytes - Generated background image file (in bytes).
         """
         nonlocal call_count
         call_count += 1
-        return real_generate_background(text, negative_text)
+        return real_generate_background(text, negative_text, reference_images=reference_images)
 
     monkeypatch.setattr(together_caller, "generate_background_image", counting_generate_background)
 
     shot = Shot(
         description="An empty alley at night.",
-        setting="a narrow city alley at night, wet cobblestones, a single flickering streetlamp",
+        location_id="alley",
         regions=[],
         paragraph_index=0,
         shot_size=ShotSize.WIDE,
@@ -157,6 +158,8 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         duration_s=2.0,
     )
     background_cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
+    locations = {"alley": Location(name="Alley", description="a narrow city alley, wet cobblestones, a single streetlamp")}
 
     first_result = render_shot(
         shot=shot,
@@ -164,12 +167,15 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         character_cache={},
         background_cache=background_cache,
         reference_cache={},
+        locations=locations,
+        master_plate_cache=master_plate_cache,
     )
     assert len(first_result.image) > 0
-    assert call_count == 1  # One background render, no character calls at all
+    assert call_count == 2  # The master plate and the low-angle background drawn from it, no character calls at all
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "background_only_shot.png").write_bytes(first_result.image)
+    (OUTPUT_DIR / "background_only_master_plate.png").write_bytes(master_plate_cache["alley"])
 
     second_result = render_shot(
         shot=shot,
@@ -177,8 +183,10 @@ def test_render_shot_background_only_end_to_end_and_cache_reuse_against_real_ser
         character_cache={},
         background_cache=background_cache,
         reference_cache={},
+        locations=locations,
+        master_plate_cache=master_plate_cache,
     )
-    assert call_count == 1  # Unchanged: reused from the background cache
+    assert call_count == 2  # Unchanged: reused from the background cache
     assert second_result.image == first_result.image
 
 @pytest.mark.integration
@@ -186,7 +194,7 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
     """
     Verifies that a shot with regions, rendered through render_shot, comes back as real characters composited over a real background.
 
-    The first render costs 1 background + 2 references + 2 poses, and the repeat render must be served entirely from the caches.
+    The shot is a close-up, so its background is a wide, high-angle view (cropped once the characters are on it). The first render costs 1 master plate + 1 background + 2 references + 2 poses, and the repeat render must be served entirely from the caches.
 
     Arguments:
         monkeypatch: pytest.MonkeyPatch - Used to swap in the call-counting character and background generation.
@@ -211,27 +219,28 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         call_count += 1
         return real_generate_character(text, negative_text, reference_images=reference_images)
 
-    def counting_generate_background(text: str, negative_text: str) -> bytes:
+    def counting_generate_background(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         """
         Counts the call and passes it through to the real background generation.
 
         Arguments:
             text: str - Prompt.
             negative_text: str - Negative prompt.
+            reference_images: list[bytes] - The location's master plate. Defaults to None (for the master plate itself).
 
         Returns:
             bytes - Generated background image file (in bytes).
         """
         nonlocal call_count
         call_count += 1
-        return real_generate_background(text, negative_text)
+        return real_generate_background(text, negative_text, reference_images=reference_images)
 
     monkeypatch.setattr(together_caller, "generate_character_image", counting_generate_character)
     monkeypatch.setattr(together_caller, "generate_background_image", counting_generate_background)
 
     shot = Shot(
         description="Alice and Bob talking in a dim hallway.",
-        setting="a dim narrow hallway with peeling wallpaper and a single overhead bulb",
+        location_id="hallway",
         regions=_test_regions(),
         paragraph_index=0,
         shot_size=ShotSize.CLOSE_UP,
@@ -242,6 +251,8 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
     character_cache: CutoutCache = {}
     background_cache: BackgroundCache = {}
     reference_cache: ReferenceImageCache = {}
+    master_plate_cache: MasterPlateCache = {}
+    locations = {"hallway": Location(name="Hallway", description="a dim narrow hallway with peeling wallpaper and a single overhead bulb")}
 
     first_result = render_shot(
         shot=shot,
@@ -249,9 +260,11 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         character_cache=character_cache,
         background_cache=background_cache,
         reference_cache=reference_cache,
+        locations=locations,
+        master_plate_cache=master_plate_cache,
     )
     assert len(first_result.image) > 0
-    assert call_count == 5
+    assert call_count == 6
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "composited_shot_with_background.png").write_bytes(first_result.image)
@@ -262,6 +275,8 @@ def test_render_shot_with_regions_composites_over_a_real_background_end_to_end(m
         character_cache=character_cache,
         background_cache=background_cache,
         reference_cache=reference_cache,
+        locations=locations,
+        master_plate_cache=master_plate_cache,
     )
-    assert call_count == 5
+    assert call_count == 6
     assert second_result.image == first_result.image

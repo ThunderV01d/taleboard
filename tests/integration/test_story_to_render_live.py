@@ -35,7 +35,7 @@ HAIKU_USD_PER_M_INPUT = 1.00  # Anthropic list price; Bedrock regional pricing m
 HAIKU_USD_PER_M_OUTPUT = 5.00
 
 # Deliberately exercises: an alias far from the introduction ("Elias Brandt" -> "the harbourmaster", 6 paragraphs later), a one-off named character (Lena),
-# a character introduced late (Tomas), a paragraph with no visual referent (paragraph 5), and several setting changes
+# a character introduced late (Tomas), a paragraph with no visual referent (paragraph 5), and several location changes
 STORY = """\
 Mara climbed the last of the spiral stairs into the lamp room of the lighthouse. She was a wiry woman in her thirties, her dark hair tied back under a knitted wool cap, wearing a heavy yellow oilskin coat. Through the salt-streaked windows she could see storm clouds massing over the sea.
 
@@ -67,7 +67,7 @@ EXPECTED_PRESENCE = {
 
 def _contact_sheet(images, path):
     """
-    Lays every rendered shot out on one image, captioned with its paragraph, framing, characters and setting.
+    Lays every rendered shot out on one image, captioned with its paragraph, framing, characters, location and details.
 
     Arguments:
         images: list[tuple[Path,Shot]] - Rendered shot image paths, each alongside its Shot.
@@ -83,7 +83,7 @@ def _contact_sheet(images, path):
         who = ", ".join(f"{r.character_id}:{r.orientation.value}" for r in shot.regions) or "(no characters)"
         draw.text((x + 4, y + cell + 2), f"#{i} p{shot.paragraph_index} {shot.shot_size.value}/{shot.angle.value}", fill="black")
         draw.text((x + 4, y + cell + 18), who[:60], fill="black")
-        draw.text((x + 4, y + cell + 34), shot.setting[:60], fill="gray")
+        draw.text((x + 4, y + cell + 34), f"{shot.location_id}: {shot.details}"[:60], fill="gray")
     sheet.save(path)
 
 
@@ -187,20 +187,21 @@ def pipeline_run():
         together_calls.append({"kind": "reference" if reference_images is None else "pose", "prompt": text})
         return real_generate_character(text, negative_text, reference_images=reference_images)
 
-    def counting_generate_background(text, negative_text):
+    def counting_generate_background(text, negative_text, reference_images=None):
         """
-        Records the call and passes it through to the real background generation.
+        Records the call (as a master plate or a background) and passes it through to the real background generation.
 
         Arguments:
             text: str - Prompt.
             negative_text: str - Negative prompt.
+            reference_images: list[bytes] - The location's master plate. Defaults to None (for a master plate generation).
 
         Returns:
             bytes - Generated background image file (in bytes).
         """
         guard()
-        together_calls.append({"kind": "background", "prompt": text})
-        return real_generate_background(text, negative_text)
+        together_calls.append({"kind": "master_plate" if reference_images is None else "background", "prompt": text})
+        return real_generate_background(text, negative_text, reference_images=reference_images)
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(boto3, "client", counting_boto_client)
@@ -213,13 +214,14 @@ def pipeline_run():
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         (OUTPUT_DIR / "shots.json").write_text(json.dumps({
             "cast": {cid: d.model_dump() for cid, d in cast.items()},
+            "locations": {lid: location.model_dump() for lid, location in breakdown.locations.items()},
             "shots": [s.model_dump(mode="json") for s in shots],
         }, indent=2)) # Writes the shots to output after shot breakdown -- for sanity check purposes
-        character_cache, background_cache, reference_cache = {}, {}, {}
+        character_cache, background_cache, reference_cache, master_plate_cache = {}, {}, {}, {}
         images = []
         rendered_shots = []
         for n, shot in enumerate(shots):
-            result = render_shot(shot, characters, character_cache, background_cache, reference_cache)
+            result = render_shot(shot, characters, character_cache, background_cache, reference_cache, locations=breakdown.locations, master_plate_cache=master_plate_cache)
             if result.needs_review:
                 shot = shot.model_copy(update={"needs_review": True})  # render_shot never modifies the shot; flagging it is the caller's job
             rendered_shots.append(shot)
@@ -229,6 +231,8 @@ def pipeline_run():
         shots = rendered_shots
         for character_id, reference in reference_cache.items():
             (OUTPUT_DIR / f"reference_{character_id}.png").write_bytes(reference)
+        for location_id, master_plate in master_plate_cache.items():
+            (OUTPUT_DIR / f"master_plate_{location_id}.png").write_bytes(master_plate)
 
     _contact_sheet(images, OUTPUT_DIR / "contact_sheet.png")
 
@@ -240,7 +244,7 @@ def pipeline_run():
         "bedrock_output_tokens": output_tokens,
         "bedrock_usd": input_tokens / 1e6 * HAIKU_USD_PER_M_INPUT + output_tokens / 1e6 * HAIKU_USD_PER_M_OUTPUT,
         "together_calls_by_kind": {k: sum(c["kind"] == k for c in together_calls)
-                                   for k in ("reference", "pose", "background")},
+                                   for k in ("reference", "pose", "master_plate", "background")},
         "together_usd": len(together_calls) * FLUX_USD_PER_IMAGE,
     }
     (OUTPUT_DIR / "run_log.json").write_text(json.dumps({
@@ -296,6 +300,18 @@ def test_exactly_one_reference_image_per_rendered_character(pipeline_run):
     rendered_ids = {r.character_id for s in pipeline_run["shots"] for r in s.regions}
     reference_calls = pipeline_run["cost"]["together_calls_by_kind"]["reference"]
     assert reference_calls == len(rendered_ids)
+
+
+@pytest.mark.integration
+def test_exactly_one_master_plate_per_location_used(pipeline_run):
+    """
+    Verifies that each location the shots use gets exactly one master plate, and that unused locations cost nothing.
+
+    Arguments:
+        pipeline_run: dict - The shared pipeline run (module-scoped fixture).
+    """
+    used_location_ids = {s.location_id for s in pipeline_run["shots"]}
+    assert pipeline_run["cost"]["together_calls_by_kind"]["master_plate"] == len(used_location_ids)
 
 
 @pytest.mark.integration

@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from taleboard.parsing.bedrock_caller import CallLLM
 from taleboard.parsing.contamination_judge import apply_shot_rewrites, judge_texts, shot_items
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMShotDraft, build_shot_draft_model
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMShotDraft, build_shot_draft_model
 from taleboard.parsing.prompts import build_shot_breakdown_prompt
 from taleboard.schema.models import Region, Shot
 
@@ -41,6 +41,7 @@ def get_shots_for_paragraph(
     previous_shot: LLMShotDraft | None,
     call_llm: CallLLM,
     call_judge: CallLLM | None = None,
+    locations: dict[str,LLMLocationDraft] | None = None,
 ) -> list[ShotResult]:
     """
     Breaks one paragraph into shots that are then validated, and (with a judge) checked for text that would be drawn into the wrong image.
@@ -54,13 +55,14 @@ def get_shots_for_paragraph(
         previous_shot: LLMShotDraft - Previous generated shot; used for context retention between shots. Defaults to None (for first shot).
         call_llm: CallLLM - LLM caller function (usually comes from bedrock_caller or is mocked during testing).
         call_judge: CallLLM - LLM caller function for the contamination judge's output schema. Defaults to None (no judging).
+        locations: dict[str,LLMLocationDraft] - Mapping between location IDs and LLM location drafts; each shot's location_id must be one of them. Defaults to None (location_id isn't constrained).
 
     Returns:
         list[ShotResult] - List of LLM-drafted shots alongside review flags, in paragraph order.
     """
     cast_ids = list(cast.keys())
-    ShotModel = build_shot_draft_model(cast_ids)
-    prompt = build_shot_breakdown_prompt(paragraph, cast, previous_shot)
+    ShotModel = build_shot_draft_model(cast_ids, list(locations) if locations else None)
+    prompt = build_shot_breakdown_prompt(paragraph, cast, previous_shot, locations)
     pending = list(enumerate(_get_raw_shots(call_llm(prompt)))) # (slot, raw shot) -- the slot is the shot's place in the paragraph
     next_slot = len(pending)
 
@@ -72,6 +74,7 @@ def get_shots_for_paragraph(
         still_failing: list[tuple[int, dict, str]] = []
         passed: list[tuple[int, dict, LLMShotDraft]] = []
         for slot, raw_shot in pending:
+            raw_shot = _without_duplicate_regions(raw_shot) # Before validating, so judge rewrites (which index the raw regions) still line up
             try:
                 shot = ShotModel.model_validate(raw_shot)
             except ValidationError as e:
@@ -103,7 +106,7 @@ def get_shots_for_paragraph(
             # Retry timeout
             if attempt >= MAX_RETRIES:
                 for slot, _, _ in still_failing:
-                    results[slot] = ShotResult(shot=_fallback_shot(paragraph), needs_review=True) # Since the shot failed even after all permitted retries, we need a human to review it manually
+                    results[slot] = ShotResult(shot=_fallback_shot(paragraph, _fallback_location_id(previous_shot, locations)), needs_review=True) # Since the shot failed even after all permitted retries, we need a human to review it manually
             else:
                 # Retry -- the LLM returns the fixed shots in the order they were sent, so each goes back to its slot
                 retried = _get_raw_shots(call_llm(_build_retry_prompt([{"raw": raw, "error": error} for _, raw, error in still_failing])))
@@ -141,10 +144,13 @@ def _accept_final_rewrite(ShotModel: type[LLMShotDraft], rewritten: dict, origin
 
 def find_cast_mentions(text: str, cast: dict[str,LLMCharacterDraft]) -> list[str]:
     """
-    Finds cast members named in a piece of text (a shot's setting, or a region's action), by their name or any alias.
-    Settings and actions are each drawn on their own -- so a cast member named in either gets drawn into the wrong image, on top of their own region.
+    Finds cast members named in a piece of text (a shot's details, or a region's action), by their name or any alias. 
+    
+    Details and actions are each drawn on their own -- so a cast member named in either gets drawn into the wrong image, on top of their own region.
+
     Single-word terms match case-sensitively, so a character called "Rose" doesn't match "rose bushes". Multi-word terms ("the old man") match in any case.
-    Pronouns and plain descriptions ("the house looms before her", "the child's shoulders") can't be caught this way -- the breakdown prompt covers those.
+
+    Pronouns and plain descriptions ("the door behind her", "the child's shoulders") can't be caught this way -- the breakdown prompt covers those.
     
     Arguments:
         text: str - Text to search.
@@ -166,20 +172,20 @@ def find_cast_mentions(text: str, cast: dict[str,LLMCharacterDraft]) -> list[str
     return found
 
 
-def _cast_in_setting_error(mentioned: list[str]) -> str:
+def _cast_in_details_error(mentioned: list[str]) -> str:
     """
-    Builds the retry error for a setting that names cast members.
+    Builds the retry error for details that name cast members.
 
     Arguments:
-        mentioned: list[str] - The names or aliases found in the setting.
+        mentioned: list[str] - The names or aliases found in the details.
 
     Returns:
         str - Error message, phrased as an instruction for the model.
     """
     names = ", ".join(f"'{term}'" for term in mentioned)
     return (
-        f"The setting mentions cast member(s) {names}. The setting is drawn as an empty background and cast members are "
-        "drawn on top from their regions, so they would appear twice. Rewrite the setting to describe only the place -- "
+        f"The details mention cast member(s) {names}. The details are drawn as part of an empty background and cast members are "
+        "drawn on top from their regions, so they would appear twice. Rewrite the details to describe only visible changes to the place -- "
         "no cast members by any name, description or pronoun, and nothing they are holding or doing."
     )
 
@@ -205,7 +211,7 @@ def _cast_in_action_error(character_id: str, mentioned: list[str]) -> str:
 
 def _cast_leaks(shot: LLMShotDraft, cast: dict[str,LLMCharacterDraft]) -> list[str]:
     """
-    Checks a schema-valid shot for cast members written into text that is drawn on its own -- the setting, or another character's action.
+    Checks a schema-valid shot for cast members written into text that is drawn on its own -- the details, or another character's action.
 
     Arguments:
         shot: LLMShotDraft - Shot to check.
@@ -215,15 +221,42 @@ def _cast_leaks(shot: LLMShotDraft, cast: dict[str,LLMCharacterDraft]) -> list[s
         list[str] - One retry error per problem found; empty if the shot is clean.
     """
     problems = []
-    mentioned = find_cast_mentions(shot.setting, cast)
+    mentioned = find_cast_mentions(shot.details, cast)
     if mentioned:
-        problems.append(_cast_in_setting_error(mentioned))
+        problems.append(_cast_in_details_error(mentioned))
     for region in shot.regions:
         others = {char_id: char for char_id, char in cast.items() if char_id != region.character_id} # A character naming themselves isn't a leak
         named = find_cast_mentions(region.action, others)
         if named:
             problems.append(_cast_in_action_error(region.character_id, named))
     return problems
+
+
+def _without_duplicate_regions(raw_shot: dict) -> dict:
+    """
+    Drops any region for a character who already has one in the shot, keeping the first.
+
+    A character can only be drawn once per shot (cutouts are keyed by character ID), so a second region would silently replace the first's pose. A duplicate is the model repeating itself rather than meaning anything, so it is dropped rather than sent back for a retry -- which costs nothing and can never turn a good shot into a fallback.
+
+    Arguments:
+        raw_shot: dict - The shot as the breakdown LLM returned it. Left as it is if it isn't shaped like a shot (validation reports that).
+
+    Returns:
+        dict - The shot, with at most one region per character.
+    """
+    regions = raw_shot.get("regions") if isinstance(raw_shot, dict) else None
+    if not isinstance(regions, list):
+        return raw_shot
+    seen: set = set()
+    kept = []
+    for region in regions:
+        character_id = region.get("character_id") if isinstance(region, dict) else None
+        if character_id is not None and character_id in seen:
+            logging.getLogger(__name__).info("Dropped a duplicate region for %s", character_id)
+            continue
+        seen.add(character_id)
+        kept.append(region)
+    return raw_shot if len(kept) == len(regions) else {**raw_shot, "regions": kept}
 
 
 def _get_raw_shots(response_text: str) -> list[dict]:
@@ -267,7 +300,23 @@ def _build_retry_prompt(failures: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _fallback_shot(paragraph: str) -> LLMShotDraft:
+def _fallback_location_id(previous_shot: LLMShotDraft | None, locations: dict[str,LLMLocationDraft] | None) -> str:
+    """
+    Picks the location a fallback shot is placed in -- wherever the story last was, which is the likeliest place for the failed shot too.
+
+    Arguments:
+        previous_shot: LLMShotDraft - Previous generated shot. None for the first shot.
+        locations: dict[str,LLMLocationDraft] - Mapping between location IDs and LLM location drafts. None if locations aren't known.
+
+    Returns:
+        str - The previous shot's location ID; or, failing that, the story's first location; or "unknown".
+    """
+    if previous_shot is not None:
+        return previous_shot.location_id
+    return next(iter(locations), "unknown") if locations else "unknown"
+
+
+def _fallback_shot(paragraph: str, location_id: str) -> LLMShotDraft:
     """
     Builds a safe, generic shot to be used when a real one couldn't be produced even after permitted retries.
 
@@ -276,6 +325,7 @@ def _fallback_shot(paragraph: str) -> LLMShotDraft:
 
     Arguments:
         paragraph: str - Failing paragraph (in plain text).
+        location_id: str - Location to place the shot in, so it still has a background.
     
     Returns:
         LLMShotDraft - Fallback shot draft with generic details.
@@ -283,7 +333,8 @@ def _fallback_shot(paragraph: str) -> LLMShotDraft:
     # Realistically, none of these fields matter as a human will be reviewing them anyway.
     return LLMShotDraft(
         description=paragraph[:200], # Capped at our maximum description length
-        setting="unknown -- needs manual review",
+        location_id=location_id,
+        details="",
         shot_size="medium",
         angle="eye_level",
         duration_s=2.0,
@@ -316,7 +367,8 @@ def to_domain_shot(result: ShotResult, paragraph_index: int) -> Shot:
     ]
     return Shot(
         description=draft.description,
-        setting = draft.setting,
+        location_id=draft.location_id,
+        details=draft.details,
         regions = regions,
         paragraph_index=paragraph_index,
         shot_size=draft.shot_size,

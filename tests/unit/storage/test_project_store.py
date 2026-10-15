@@ -17,9 +17,9 @@ from PIL import Image
 
 from taleboard.rendering.shot_renderer import render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame, ProjectStatus
-from taleboard.schema.models import Character, Region, Shot
-from taleboard.storage.caches import PersistentBackgroundCache, PersistentPoseCache, PersistentReferenceCache
-from taleboard.storage.project_store import ProjectStore, background_cache_sk, image_s3_key, pose_cache_sk, project_pk, shot_sk, PROJECTS_INDEX, JOB_LEASE_SECONDS
+from taleboard.schema.models import Character, Location, Region, Shot
+from taleboard.storage.caches import PersistentBackgroundCache, PersistentMasterPlateCache, PersistentPoseCache, PersistentReferenceCache
+from taleboard.storage.project_store import ProjectStore, background_cache_sk, image_s3_key, location_sk, pose_cache_sk, project_pk, shot_sk, PROJECTS_INDEX, JOB_LEASE_SECONDS
 
 TABLE = "taleboard-test"
 BUCKET = "taleboard-test-images"
@@ -74,16 +74,16 @@ def _png(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
 
 def _shot(index: int, regions: list[Region] | None = None) -> Shot:
     """
-    Builds a shot whose description and setting carry its index.
+    Builds a shot at the lighthouse whose description and details carry its index.
 
     Arguments:
-        index: int - Index used in the description and setting.
+        index: int - Index used in the description and details.
         regions: list[Region] - Character regions of the shot. Defaults to None (no regions).
 
     Returns:
         Shot - A Shot object.
     """
-    return Shot(description=f"shot {index}", setting=f"setting {index}", regions=regions or [], paragraph_index=index,
+    return Shot(description=f"shot {index}", location_id="lighthouse", details=f"details {index}", regions=regions or [], paragraph_index=index,
                 shot_size=ShotSize.MEDIUM, angle=CameraAngle.EYE_LEVEL, duration_s=2.5)
 
 
@@ -126,28 +126,32 @@ def test_shot_sort_keys_are_zero_padded_so_they_sort_in_story_order():
 
 def test_cache_sort_keys_hash_free_form_text():
     """
-    Verifies that cache sort keys hash the setting and action, are stable, and match the planned layout.
+    Verifies that cache sort keys hash the details and action, are stable, and match the planned layout.
     """
-    long_setting = "a narrow city alley at night, wet cobblestones, a single flickering streetlamp " * 5
-    key = background_cache_sk(long_setting, "wide", "low")
+    long_details = "rain streaming down the window, papers scattered across the floor, the lamp knocked over " * 5
+    key = background_cache_sk("lighthouse", long_details, "wide", "low")
 
-    assert key == background_cache_sk(long_setting, "wide", "low")
-    assert long_setting not in key and len(key) < 60
-    assert key.startswith("BGCACHE#") and key.endswith("#wide#low")
+    assert key == background_cache_sk("lighthouse", long_details, "wide", "low")
+    assert long_details not in key and len(key) < 70
+    assert key.startswith("BGCACHE#lighthouse#") and key.endswith("#wide#low")
+    assert key != background_cache_sk("lighthouse", "", "wide", "low")
+    assert location_sk("lighthouse") == "LOCATION#lighthouse"
     assert pose_cache_sk("alice", "waving", "left", "eye_level").startswith("POSECACHE#alice#")
     assert pose_cache_sk("alice", "waving", "left", "eye_level").endswith("#left#eye_level")
 
 
 def test_project_round_trips_through_dynamodb(store):
     """
-    Verifies that a saved project loads back with the same metadata, cast and shots, with shots in story order.
+    Verifies that a saved project loads back with the same metadata, cast, locations and shots, with shots in story order.
 
     Twelve shots are saved, so string ordering of unpadded indices (eg:- "10" before "2") would show up here.
     """
     project = store.create_project("Lighthouse")
     cast = {"alice": Character(name="Alice", description="A woman.", aliases=["Al"]), "bob": Character(name="Bob", description="A man.")}
     shots = [_shot(i, [_region()] if i % 2 else []) for i in range(12)]
+    locations = {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room"), "harbour": Location(name="Harbour", description="a stone quay")}
     store.save_characters(project.project_id, cast)
+    store.save_locations(project.project_id, locations)
     store.save_shots(project.project_id, shots)
 
     loaded = store.load_project(project.project_id)
@@ -155,6 +159,7 @@ def test_project_round_trips_through_dynamodb(store):
     assert loaded.name == "Lighthouse"
     assert loaded.created_at == project.created_at
     assert loaded.cast == cast
+    assert loaded.locations == locations
     assert loaded.shots == shots
     assert loaded.status == ProjectStatus.CREATED
     assert loaded.shot_count is None
@@ -186,7 +191,7 @@ def test_background_cache_misses_then_hits_across_separate_cache_objects(store):
     Verifies that a cached background is found by a brand-new cache object -- as a later, stateless Lambda invocation would create.
     """
     project = store.create_project("Lighthouse")
-    key = ("an empty hallway", "medium", "eye_level")
+    key = ("lighthouse", "", "medium", "eye_level")
 
     assert PersistentBackgroundCache(store, project.project_id).get(key) is None
     PersistentBackgroundCache(store, project.project_id)[key] = _png()
@@ -261,6 +266,50 @@ def test_reference_image_for_an_unsaved_character_is_rejected(store):
     assert "CHARACTER#nobody" not in _raw_items(store, project.project_id)
 
 
+def test_master_plate_is_stored_on_the_location_item(store):
+    """
+    Verifies that a master plate is recorded as the location's master_plate, leaving its other fields untouched -- and survives the locations being saved again.
+    """
+    project = store.create_project("Lighthouse")
+    store.save_locations(project.project_id, {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room")})
+
+    PersistentMasterPlateCache(store, project.project_id)["lighthouse"] = _png()
+    store.save_locations(project.project_id, {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room with a brass lamp")})
+
+    lighthouse = store.load_project(project.project_id).locations["lighthouse"]
+    assert lighthouse.master_plate == image_s3_key(project.project_id, "LOCATION#lighthouse#master")
+    assert lighthouse.description == "a round stone lamp room with a brass lamp"
+    assert PersistentMasterPlateCache(store, project.project_id).get("lighthouse") == _png()
+
+
+def test_master_plate_for_an_unsaved_location_is_rejected(store):
+    """
+    Verifies that storing a master plate for a location that isn't saved raises a KeyError, rather than creating a half-empty location item.
+    """
+    project = store.create_project("Lighthouse")
+
+    assert PersistentMasterPlateCache(store, project.project_id).get("nowhere") is None
+    with pytest.raises(KeyError, match="save the locations"):
+        PersistentMasterPlateCache(store, project.project_id)["nowhere"] = _png()
+
+    assert "LOCATION#nowhere" not in _raw_items(store, project.project_id)
+
+
+def test_a_shot_saved_before_locations_existed_still_loads(store):
+    """
+    Verifies that an old shot item -- with a setting, and no location_id or details -- still loads, so projects from before locations can still be viewed.
+    """
+    project = store.create_project("Old")
+    old_item = {**store._shot_item(project.project_id, 0, _shot(0)), "setting": "a narrow alley"}
+    del old_item["location_id"], old_item["details"]
+    store._table.put_item(Item=old_item)
+
+    shot = store.load_project(project.project_id).shots[0]
+
+    assert shot.location_id is None
+    assert shot.details == ""
+
+
 def test_rerendering_with_fresh_persistent_caches_makes_no_generation_calls(store):
     """
     Verifies the point of this whole module: re-rendering a shot in a new, stateless invocation costs nothing.
@@ -269,7 +318,9 @@ def test_rerendering_with_fresh_persistent_caches_makes_no_generation_calls(stor
     """
     project = store.create_project("Lighthouse")
     characters = {"alice": Character(name="Alice", description="A woman.")}
+    locations = {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room")}
     store.save_characters(project.project_id, characters)
+    store.save_locations(project.project_id, locations)
     shot = _shot(0, [_region()])
     calls = {"generate": 0}
 
@@ -299,13 +350,14 @@ def test_rerendering_with_fresh_persistent_caches_makes_no_generation_calls(stor
                            character_cache=PersistentPoseCache(store, project.project_id),
                            background_cache=PersistentBackgroundCache(store, project.project_id),
                            reference_cache=PersistentReferenceCache(store, project.project_id),
-                           generate_image=fake_generate_image, remove_background=lambda raw: _png())
+                           generate_image=fake_generate_image, remove_background=lambda raw: _png(),
+                           locations=locations, master_plate_cache=PersistentMasterPlateCache(store, project.project_id))
 
     first = render()
-    assert calls["generate"] == 3  # Background + reference + pose
+    assert calls["generate"] == 4  # Master plate + background + reference + pose
 
     second = render()
-    assert calls["generate"] == 3  # Unchanged: everything came from DynamoDB + S3
+    assert calls["generate"] == 4  # Unchanged: everything came from DynamoDB + S3
     assert second.image == first.image
 
 def test_list_projects_returns_every_project_newest_first(store):
@@ -369,6 +421,7 @@ def test_save_breakdown_replaces_stale_shots_and_sets_shot_count_last(store):
 
     assert len(store.list_shots(project.project_id)) == 3
     assert store.get_project(project.project_id).shot_count == 3
+    assert store.load_project(project.project_id).locations == {}  # No locations given, none saved
     assert store.load_project(project.project_id).shot_count == 3
 
 
@@ -401,3 +454,15 @@ def test_a_failed_project_takes_a_new_story_with_a_fresh_breakdown(store):
 
     resubmitted = store.get_project(project.project_id)
     assert (resubmitted.status, resubmitted.job_id, resubmitted.shot_count, resubmitted.error) == (ProjectStatus.PENDING, "job-2", None, None)
+
+
+def test_save_breakdown_saves_the_locations_with_the_cast(store):
+    """
+    Verifies that the breakdown checkpoint includes the locations, so a resumed job can render from them.
+    """
+    project = store.create_project("Lighthouse")
+    locations = {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room")}
+
+    store.save_breakdown(project.project_id, {}, [_shot(0)], locations)
+
+    assert store.load_project(project.project_id).locations == locations

@@ -41,12 +41,12 @@ def _shot(index: int) -> Shot:
     Builds a character-less shot.
 
     Arguments:
-        index: int - Used in the description and setting, and as the paragraph index.
+        index: int - Used in the description and details, and as the paragraph index.
 
     Returns:
         Shot - A Shot object.
     """
-    return Shot(description=f"shot {index}", setting=f"setting {index}", regions=[], paragraph_index=index,
+    return Shot(description=f"shot {index}", location_id="lighthouse", details=f"details {index}", regions=[], paragraph_index=index,
                 shot_size=ShotSize.MEDIUM, angle=CameraAngle.EYE_LEVEL, duration_s=2.0)
 
 
@@ -159,6 +159,7 @@ def test_status_and_shots_show_progress_part_way_through_a_job(client, store):
     shots = client.get(f"/projects/{pid}/shots").json()
     assert [(s["shot_id"], s["rendered"]) for s in shots] == [("0000", True), ("0001", False), ("0002", False)]
     assert shots[0]["image_url"].startswith("https://") and shots[1]["image_url"] is None
+    assert (shots[1]["location_id"], shots[1]["details"]) == ("lighthouse", "details 1") and "setting" not in shots[1]
 
     assert client.get(f"/projects/{pid}/shots/0").json()["needs_review"] is True
     assert client.get(f"/projects/{pid}/shots/0002").json()["shot_id"] == "0002"

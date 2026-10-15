@@ -7,10 +7,10 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from taleboard.parsing.cast_extraction import CAST_RETRIES, assign_char_ids, to_domain_character, extract_cast
+from taleboard.parsing.cast_extraction import CAST_RETRIES, assign_ids, to_domain_character, extract_cast
 from taleboard.parsing.llm_schemas import LLMCharacterDraft
 
-def test_assign_char_ids_no_duplicates():
+def test_assign_ids_no_duplicates():
     """
     Verifies that characters with distinct names get their plain slugified names as IDs.
     """
@@ -18,14 +18,14 @@ def test_assign_char_ids_no_duplicates():
         LLMCharacterDraft(name="Alice", description="..."),
         LLMCharacterDraft(name="Bob", description="..."),
     ]
-    result = assign_char_ids(characters)
+    result = assign_ids(characters)
 
     assert set(result.keys()) == {"alice", "bob"}
     assert result["alice"].name == "Alice"
     assert result["bob"].name == "Bob"
 
 
-def test_assign_char_ids_duplicate_names_get_retroactive_suffixes():
+def test_assign_ids_duplicate_names_get_retroactive_suffixes():
     """
     Verifies that characters sharing a name all get numeric suffixes, including the first one.
     """
@@ -33,14 +33,14 @@ def test_assign_char_ids_duplicate_names_get_retroactive_suffixes():
         LLMCharacterDraft(name="Sam", description="first sam"),
         LLMCharacterDraft(name="Sam", description="second sam"),
     ]
-    result = assign_char_ids(characters)
+    result = assign_ids(characters)
 
     assert set(result.keys()) == {"sam_1", "sam_2"}
     assert result["sam_1"].description == "first sam"
     assert result["sam_2"].description == "second sam"
 
 
-def test_assign_char_ids_impersonator_collision_does_not_lose_characters():
+def test_assign_ids_impersonator_collision_does_not_lose_characters():
     """
     Verifies that no character is overwritten when a literal name collides with a suffixed ID.
 
@@ -52,17 +52,17 @@ def test_assign_char_ids_impersonator_collision_does_not_lose_characters():
         LLMCharacterDraft(name="Sam 1", description="an impersonator"),
         LLMCharacterDraft(name="Sam 2", description="another impersonator"),
     ]
-    result = assign_char_ids(characters)
+    result = assign_ids(characters)
 
     # Checks that nobody got overwritten
     assert len(result) == len(characters)
 
 
-def test_assign_char_ids_empty_list():
+def test_assign_ids_empty_list():
     """
     Verifies that an empty list of characters produces an empty mapping.
     """
-    assert assign_char_ids([]) == {}
+    assert assign_ids([]) == {}
 
 def test_to_domain_character_maps_fields():
     """

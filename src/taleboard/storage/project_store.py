@@ -5,14 +5,17 @@ Every project lives in one DynamoDB table, under the partition key PROJECT#<proj
 
     METADATA                                                       - project name, created_at, render_job state, shot_count
     CHARACTER#<character_id>                                       - name, description, aliases, appearance_reference (S3 key)
+    LOCATION#<location_id>                                         - name, description, master_plate (S3 key)
     SHOT#<zero-padded index>                                       - the shot's fields
-    BGCACHE#<hash(setting)>#<shot_size>#<angle>                    - S3 key of a cached background
+    BGCACHE#<location_id>#<hash(details)>#<shot_size>#<angle>      - S3 key of a cached background
     POSECACHE#<character_id>#<hash(action)>#<orientation>#<angle>  - S3 key of a cached cutout
 
 Images are always written to S3 before the DynamoDB item that points at them, so an item never points at a missing image. S3 keys are derived from the cache keys, so re-writing the same cache entry overwrites the same object rather than leaving orphans behind.
 
+Projects broken down before locations existed keep their old BGCACHE#<hash(setting)>#<shot_size>#<angle> items; nothing reads them any more.
+
 Attributes:
-    TEXT_HASH_LENGTH: int - Number of hex characters kept from a SHA-256 hash of free-form text (setting, action).
+    TEXT_HASH_LENGTH: int - Number of hex characters kept from a SHA-256 hash of free-form text (details, action).
     SHOT_INDEX_WIDTH: int - Number of digits a shot index is zero-padded to, so shots sort in story order.
     DEFAULT_REGION: str - AWS Region used when none is given.
     PROJECTS_INDEX: str - Name of the sparse GSI that lists projects newest-first. Only METADATA items carry its keys.
@@ -30,7 +33,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from taleboard.schema.enums import ProjectStatus
-from taleboard.schema.models import Character, Project, Shot
+from taleboard.schema.models import Character, Location, Project, Shot
 
 TEXT_HASH_LENGTH = 16
 SHOT_INDEX_WIDTH = 4
@@ -45,7 +48,7 @@ def text_hash(text: str) -> str:
     Python's built-in hash() is randomised per process, so SHA-256 is used instead -- every Lambda invocation must compute the same key.
 
     Arguments:
-        text: str - Free-form text (eg:- a setting or an action).
+        text: str - Free-form text (eg:- details or an action).
 
     Returns:
         str - First TEXT_HASH_LENGTH hex characters of the text's SHA-256 hash.
@@ -79,6 +82,19 @@ def character_sk(character_id: str) -> str:
     return f"CHARACTER#{character_id}"
 
 
+def location_sk(location_id: str) -> str:
+    """
+    Builds a location's sort key.
+
+    Arguments:
+        location_id: str - Unique location ID.
+
+    Returns:
+        str - Sort key, eg:- "LOCATION#harbourmasters_office".
+    """
+    return f"LOCATION#{location_id}"
+
+
 def shot_sk(index: int) -> str:
     """
     Builds a shot's sort key, zero-padded so that shots sort in story order.
@@ -92,19 +108,20 @@ def shot_sk(index: int) -> str:
     return f"SHOT#{index:0{SHOT_INDEX_WIDTH}d}"
 
 
-def background_cache_sk(setting: str, shot_size: str, angle: str) -> str:
+def background_cache_sk(location_id: str, details: str, shot_size: str, angle: str) -> str:
     """
-    Builds a cached background's sort key. The setting is hashed, as it is free-form and can be long.
+    Builds a cached background's sort key. The details are hashed, as they are free-form and can be long.
 
     Arguments:
-        setting: str - Setting of the shot.
+        location_id: str - Unique location ID.
+        details: str - Details of the shot ("" if the location looks as described).
         shot_size: str - Shot size value (eg:- "medium").
         angle: str - Camera angle value (eg:- "eye_level").
 
     Returns:
-        str - Sort key, eg:- "BGCACHE#9c1d...#medium#eye_level".
+        str - Sort key, eg:- "BGCACHE#office#9c1d...#medium#eye_level".
     """
-    return f"BGCACHE#{text_hash(setting)}#{shot_size}#{angle}"
+    return f"BGCACHE#{location_id}#{text_hash(details)}#{shot_size}#{angle}"
 
 
 def pose_cache_sk(character_id: str, action: str, orientation: str, angle: str) -> str:
@@ -260,6 +277,24 @@ class ProjectStore:
                 ExpressionAttributeValues={":name": character.name, ":description": character.description, ":aliases": character.aliases},
             )
 
+    def save_locations(self, project_id: str, locations: dict[str, Location]) -> None:
+        """
+        Saves (or updates) each location's name and description.
+
+        Deliberately leaves master_plate alone -- re-saving a location must never wipe out a master plate that was already paid for.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            locations: dict[str,Location] - Mapping of location IDs to locations.
+        """
+        for location_id, location in locations.items():
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": location_sk(location_id)},
+                UpdateExpression="SET #name = :name, description = :description",
+                ExpressionAttributeNames={"#name": "name"},  # 'name' is a DynamoDB reserved word
+                ExpressionAttributeValues={":name": location.name, ":description": location.description},
+            )
+
     def save_shots(self, project_id: str, shots: list[Shot]) -> None:
         """
         Saves every shot, keyed by its position in the list.
@@ -285,7 +320,7 @@ class ProjectStore:
 
     def load_project(self, project_id: str) -> Project:
         """
-        Loads a whole project -- metadata, cast and shots -- with a single (paginated) query.
+        Loads a whole project -- metadata, cast, locations and shots -- with a single (paginated) query.
 
         Raises a KeyError if no project with this ID exists.
 
@@ -302,15 +337,18 @@ class ProjectStore:
             raise KeyError(f"No project with ID {project_id!r}")
 
         cast = {}
+        locations = {}
         shots = []
         for item in items:  # Items come back sorted by SK, so shots are already in story order
             fields = _item_fields(item)
             if item["SK"].startswith("CHARACTER#"):
                 cast[item["SK"].removeprefix("CHARACTER#")] = Character.model_validate(fields)
+            elif item["SK"].startswith("LOCATION#"):
+                locations[item["SK"].removeprefix("LOCATION#")] = Location.model_validate(fields)
             elif item["SK"].startswith("SHOT#"):
                 shots.append(Shot.model_validate(fields))
 
-        return _project_from_metadata(metadata).model_copy(update={"shots":shots, "cast":cast})
+        return _project_from_metadata(metadata).model_copy(update={"shots":shots, "cast":cast, "locations":locations})
 
     def get_project(self, project_id: str) -> Project:
         """
@@ -486,9 +524,9 @@ class ProjectStore:
             return False
 
 
-    def save_breakdown(self, project_id: str, characters: dict[str, Character], shots: list[Shot]) -> None:
+    def save_breakdown(self, project_id: str, characters: dict[str, Character], shots: list[Shot], locations: dict[str, Location] | None = None) -> None:
         """
-        Saves a story's breakdown as the job's checkpoint -- the cast, then every (unrendered) shot, then shot_count.
+        Saves a story's breakdown as the job's checkpoint -- the cast and locations, then every (unrendered) shot, then shot_count.
 
         shot_count is written last, so it only exists once the shot list is complete. Any shots left by an earlier, crashed attempt are deleted first, so a shorter breakdown can't leave stale extras behind.
 
@@ -496,11 +534,13 @@ class ProjectStore:
             project_id: str - Unique project ID.
             characters: dict[str,Character] - Mapping of character IDs to characters.
             shots: list[Shot] - Shots in story order.
+            locations: dict[str,Location] - Mapping of location IDs to locations. Defaults to None (no locations).
         """
         with self._table.batch_writer() as batch:
             for item in self._query(project_id, "SHOT#"):
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
         self.save_characters(project_id, characters)
+        self.save_locations(project_id, locations or {})
         self.save_shots(project_id, shots)
         self._table.update_item(
             Key={"PK": project_pk(project_id), "SK": "METADATA"},
@@ -674,6 +714,48 @@ class ProjectStore:
             )
         except self._table.meta.client.exceptions.ConditionalCheckFailedException:
             raise KeyError(f"Character {character_id!r} isn't saved in project {project_id!r} -- save the cast before rendering") from None
+
+    def get_master_plate(self, project_id: str, location_id: str) -> bytes | None:
+        """
+        Looks up a location's master plate through its master_plate.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            location_id: str - Unique location ID.
+
+        Returns:
+            bytes - The master plate (PNG, in bytes), or None if the location has none yet.
+        """
+        item = self._table.get_item(
+            Key={"PK": project_pk(project_id), "SK": location_sk(location_id)},
+            ProjectionExpression="master_plate",
+        ).get("Item")
+        if not item or not item.get("master_plate"):
+            return None
+        return self._read_s3(item["master_plate"])
+
+    def put_master_plate(self, project_id: str, location_id: str, image: bytes) -> None:
+        """
+        Stores a location's master plate -- uploads it to S3 first, then points its master_plate at it.
+
+        Raises a KeyError if the location hasn't been saved to the project yet.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            location_id: str - Unique location ID.
+            image: bytes - Master plate (PNG, in bytes).
+        """
+        s3_key = image_s3_key(project_id, location_sk(location_id) + "#master")
+        self._write_s3(s3_key, image)
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": location_sk(location_id)},
+                UpdateExpression="SET master_plate = :plate",
+                ConditionExpression="attribute_exists(PK)",  # Never create a half-empty location item
+                ExpressionAttributeValues={":plate": s3_key},
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            raise KeyError(f"Location {location_id!r} isn't saved in project {project_id!r} -- save the locations before rendering") from None
 
     def _shot_item(self, project_id: str, index: int, shot: Shot) -> dict:
         """

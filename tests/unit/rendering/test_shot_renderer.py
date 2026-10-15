@@ -3,7 +3,7 @@ Unit tests for shot_renderer.
 
 Uses fake image generation and background removal functions, so no images are generated and no API calls are made.
 
-Covers monochrome conversion, the cutout, background and reference image caches, cutout rejection, and how render_shot dispatches to background and character rendering.
+Covers monochrome conversion, the cutout, background, reference image and master plate caches, cutout rejection, and how render_shot dispatches to background and character rendering.
 """
 import io
 
@@ -12,9 +12,9 @@ from PIL import Image
 
 from taleboard.rendering import compositor
 from taleboard.rendering.prompts import CAMERA_ANGLE_PHRASES, STYLE_PREFIX
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, CutoutRejectedError, ReferenceImageCache, _background_cache_key, _opaque_fraction, _to_monochrome, render_background, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, CutoutRejectedError, MasterPlateCache, ReferenceImageCache, _background_cache_key, _opaque_fraction, _to_monochrome, render_background, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
-from taleboard.schema.models import Character, Region, Shot
+from taleboard.schema.models import Character, Location, Region, Shot
 
 
 def _character(char_id: str = "alice") -> dict[str, Character]:
@@ -28,6 +28,19 @@ def _character(char_id: str = "alice") -> dict[str, Character]:
         dict[str,Character] - Mapping of the character ID to a Character object.
     """
     return {char_id: Character(name=char_id.title(), description="...")}
+
+
+def _locations() -> dict[str, Location]:
+    """
+    Builds two locations: an empty hallway and a crowded train platform.
+
+    Returns:
+        dict[str,Location] - Mapping of location IDs ("hallway", "platform") to Location objects.
+    """
+    return {
+        "hallway": Location(name="Hallway", description="an empty hallway"),
+        "platform": Location(name="Platform", description="a crowded train platform"),
+    }
 
 
 def _region(
@@ -60,16 +73,16 @@ def _region(
 
 def _shot(
     regions: list[Region] | None = None,
-    setting: str = "an empty hallway",
+    location_id: str | None = "hallway",
     shot_size: ShotSize = ShotSize.MEDIUM,
     angle: CameraAngle = CameraAngle.EYE_LEVEL,
 ) -> Shot:
     """
-    Builds a shot, defaulting to a medium, eye-level shot of an empty hallway with no characters.
+    Builds a shot, defaulting to a medium, eye-level shot of the hallway (see _locations), with no details and no characters.
 
     Arguments:
         regions: list[Region] - Character regions of the shot. Defaults to None (no regions).
-        setting: str - Setting of the shot. Defaults to "an empty hallway".
+        location_id: str - Location of the shot. Defaults to "hallway".
         shot_size: ShotSize - Size of the shot. Defaults to MEDIUM.
         angle: CameraAngle - Camera angle of the shot. Defaults to EYE_LEVEL.
 
@@ -78,7 +91,7 @@ def _shot(
     """
     return Shot(
         description="a shot",
-        setting=setting,
+        location_id=location_id,
         regions=regions if regions is not None else [],
         paragraph_index=0,
         shot_size=shot_size,
@@ -621,42 +634,67 @@ def _make_background_fakes():
     There is no fake background removal here, as a background render has nothing to cut out.
 
     Returns:
-        tuple[GenerateImage,dict[str,int]] - Fake generation function and the call counter (under "generate").
+        tuple[GenerateImage,dict] - Fake generation function, and its call record: the count (under "generate"), and each call's prompt and reference images (under "prompts" and "references").
     """
-    calls = {"generate": 0}
+    calls = {"generate": 0, "prompts": [], "references": []}
 
-    def fake_generate_image(text: str, negative_text: str) -> bytes:
+    def fake_generate_image(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         """
-        Counts the call and returns a solid blue image.
+        Counts the call, records its prompt and reference images, and returns a solid blue image.
 
         Arguments:
-            text: str - Prompt (ignored).
+            text: str - Prompt.
             negative_text: str - Negative prompt (ignored).
+            reference_images: list[bytes] - Reference images. Defaults to None.
 
         Returns:
             bytes - Solid blue image file (in bytes).
         """
         calls["generate"] += 1
+        calls["prompts"].append(text)
+        calls["references"].append(reference_images)
         return _solid_color_png((60, 120, 180))  # Deliberately coloured
 
     return fake_generate_image, calls
+
+
+def _render_background(
+    shot_size: ShotSize = ShotSize.MEDIUM,
+    angle: CameraAngle = CameraAngle.EYE_LEVEL,
+    location_id: str = "hallway",
+    details: str = "",
+    cache: BackgroundCache | None = None,
+    master_plate_cache: MasterPlateCache | None = None,
+    generate_image=None,
+) -> bytes:
+    """
+    Calls render_background for one of the locations from _locations, with fresh caches and fake generation unless given.
+
+    Arguments:
+        shot_size: ShotSize - Size of the shot. Defaults to MEDIUM.
+        angle: CameraAngle - Camera angle of the shot. Defaults to EYE_LEVEL.
+        location_id: str - Location of the shot. Defaults to "hallway".
+        details: str - Details of the shot. Defaults to "" (none).
+        cache: BackgroundCache - Background cache. Defaults to None (a fresh one).
+        master_plate_cache: MasterPlateCache - Master plate cache. Defaults to None (a fresh one).
+        generate_image: GenerateImage - Image generation function. Defaults to None (a fresh fake).
+
+    Returns:
+        bytes - The background.
+    """
+    return render_background(
+        location_id, _locations()[location_id], details, shot_size, angle,
+        cache if cache is not None else {},
+        master_plate_cache if master_plate_cache is not None else {},
+        generate_image or _make_background_fakes()[0],
+    )
 
 
 def test_render_background_returns_a_nonempty_image():
     """
     Verifies that a background render produces an image.
     """
-    generate_image, _ = _make_background_fakes()
-
-    result = render_background(
-        setting="an empty hallway",
-        shot_size=ShotSize.MEDIUM,
-        angle=CameraAngle.EYE_LEVEL,
-        cache={},
-        generate_image=generate_image,
-    )
-
-    assert len(result) > 0
+    assert len(_render_background()) > 0
 
 
 def test_render_background_does_not_take_a_remove_background_argument():
@@ -669,10 +707,13 @@ def test_render_background_does_not_take_a_remove_background_argument():
 
     with pytest.raises(TypeError):
         render_background(  # type: ignore[call-arg]
-            setting="an empty hallway",
+            location_id="hallway",
+            location=_locations()["hallway"],
+            details="",
             shot_size=ShotSize.MEDIUM,
             angle=CameraAngle.EYE_LEVEL,
             cache={},
+            master_plate_cache={},
             generate_image=generate_image,
             remove_background=lambda raw: raw,
         )
@@ -682,45 +723,83 @@ def test_render_background_output_is_monochrome():
     """
     Verifies that a background render is converted to monochrome.
     """
-    generate_image, _ = _make_background_fakes()
-
-    result = render_background(
-        setting="an empty hallway",
-        shot_size=ShotSize.MEDIUM,
-        angle=CameraAngle.EYE_LEVEL,
-        cache={},
-        generate_image=generate_image,
-    )
-
-    image = Image.open(io.BytesIO(result)).convert("RGB")
+    image = Image.open(io.BytesIO(_render_background())).convert("RGB")
     r, g, b = image.getpixel((5, 5))
     assert r == g == b
 
 
-def test_render_background_caches_on_setting_shot_size_and_angle():
+def test_a_wide_eye_level_background_with_no_details_is_the_master_plate_itself():
     """
-    Verifies that the same setting, shot size and angle are only rendered once.
+    Verifies that a wide, eye-level shot with no details costs only the master plate -- nothing is generated from it, or stored as a background.
     """
     generate_image, calls = _make_background_fakes()
     cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
 
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
+    background = _render_background(ShotSize.WIDE, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
 
     assert calls["generate"] == 1
+    assert calls["references"] == [None]  # The master plate is drawn from text alone
+    assert background == master_plate_cache["hallway"]
+    assert cache == {}
 
 
-def test_render_background_different_setting_triggers_a_second_generation():
+def test_every_other_background_is_drawn_from_the_master_plate():
     """
-    Verifies that a different setting needs its own background render.
+    Verifies that a background that isn't the master plate is generated with the master plate as its reference image, so it shows the same place.
+    """
+    generate_image, calls = _make_background_fakes()
+    master_plate_cache: MasterPlateCache = {}
+
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, master_plate_cache=master_plate_cache, generate_image=generate_image)
+
+    assert calls["generate"] == 2  # The master plate, then the background
+    assert calls["references"][1] == [master_plate_cache["hallway"]]
+    assert "image 1" in calls["prompts"][1]
+
+
+def test_the_master_plate_is_generated_once_per_location():
+    """
+    Verifies that every background of a location reuses its master plate, while another location gets its own.
+    """
+    generate_image, calls = _make_background_fakes()
+    master_plate_cache: MasterPlateCache = {}
+
+    for angle in CameraAngle:
+        _render_background(ShotSize.MEDIUM, angle, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    _render_background(ShotSize.MEDIUM, location_id="platform", master_plate_cache=master_plate_cache, generate_image=generate_image)
+
+    # Hallway: one master plate + three backgrounds. Platform: its own master plate + one background
+    assert calls["generate"] == 6
+    assert set(master_plate_cache) == {"hallway", "platform"}
+
+
+def test_render_background_caches_on_location_details_shot_size_and_angle():
+    """
+    Verifies that the same location, details, shot size and angle are only rendered once.
     """
     generate_image, calls = _make_background_fakes()
     cache: BackgroundCache = {}
 
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
-    render_background("a crowded train platform", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
+    _render_background(cache=cache, generate_image=generate_image)
+    _render_background(cache=cache, generate_image=generate_image)
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 2  # The master plate and the background, once each
+
+
+def test_render_background_different_details_trigger_a_second_generation():
+    """
+    Verifies that different details need their own background render -- drawn from the same master plate.
+    """
+    generate_image, calls = _make_background_fakes()
+    cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
+
+    _render_background(cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    _render_background(details="the bulb is switched off", cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+
+    assert calls["generate"] == 3
+    assert "changed only as follows: the bulb is switched off" in calls["prompts"][2]
 
 
 def test_render_background_different_shot_size_triggers_a_second_generation():
@@ -729,11 +808,12 @@ def test_render_background_different_shot_size_triggers_a_second_generation():
     """
     generate_image, calls = _make_background_fakes()
     cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
 
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
-    render_background("an empty hallway", ShotSize.WIDE, CameraAngle.EYE_LEVEL, cache, generate_image)
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    _render_background(ShotSize.WIDE, CameraAngle.LOW, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
 
 
 def test_render_background_different_angle_triggers_a_second_generation():
@@ -742,25 +822,56 @@ def test_render_background_different_angle_triggers_a_second_generation():
     """
     generate_image, calls = _make_background_fakes()
     cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
 
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache, generate_image)
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.LOW, cache, generate_image)
+    _render_background(ShotSize.MEDIUM, CameraAngle.EYE_LEVEL, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
 
-    assert calls["generate"] == 2
+    assert calls["generate"] == 3
+
+
+def test_a_close_up_gets_the_same_background_as_a_wide_shot():
+    """
+    Verifies that a close-up's background is the wide one -- the compositor crops it later -- so it costs nothing a wide shot hasn't already paid for.
+    """
+    generate_image, calls = _make_background_fakes()
+    cache: BackgroundCache = {}
+    master_plate_cache: MasterPlateCache = {}
+
+    wide = _render_background(ShotSize.WIDE, CameraAngle.LOW, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    close_up = _render_background(ShotSize.CLOSE_UP, CameraAngle.LOW, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+    eye_level_close_up = _render_background(ShotSize.CLOSE_UP, cache=cache, master_plate_cache=master_plate_cache, generate_image=generate_image)
+
+    assert close_up == wide
+    assert eye_level_close_up == master_plate_cache["hallway"]
+    assert calls["generate"] == 2  # The master plate and the wide low-angle background
 
 
 def test_background_cache_key_matches_the_stored_cache_entry():
     """
-    Verifies that the background cache key is built from the setting, shot size and angle values, and matches what is stored.
+    Verifies that the background cache key is built from the location ID, details, shot size and angle values, and matches what is stored.
     """
-    generate_image, _ = _make_background_fakes()
     cache: BackgroundCache = {}
 
-    render_background("an empty hallway", ShotSize.MEDIUM, CameraAngle.LOW, cache, generate_image)
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, details="  the bulb is off ", cache=cache)
 
-    key = _background_cache_key("an empty hallway", ShotSize.MEDIUM, CameraAngle.LOW)
-    assert key == ("an empty hallway", "medium", "low")
-    assert key in cache
+    key = _background_cache_key("hallway", "the bulb is off", ShotSize.MEDIUM, CameraAngle.LOW)
+    assert key == ("hallway", "the bulb is off", "medium", "low")
+    assert list(cache) == [key]  # Details are stripped first, so stray whitespace can't cost another generation
+
+
+def test_render_shot_rejects_a_shot_with_no_known_location():
+    """
+    Verifies that a shot whose location is missing (eg:- one broken down before locations existed) fails clearly, before anything is generated.
+    """
+    generate_image, calls = _make_background_fakes()
+
+    for location_id in (None, "lighthouse"):
+        with pytest.raises(ValueError, match="location"):
+            render_shot(_shot(location_id=location_id), {}, character_cache={}, background_cache={}, reference_cache={},
+                        generate_image=generate_image, locations=_locations(), master_plate_cache={})
+
+    assert calls["generate"] == 0
 
 def test_render_shot_with_no_regions_renders_a_background():
     """
@@ -800,14 +911,14 @@ def test_render_shot_with_no_regions_renders_a_background():
         character_calls["generate"] += 1
         return _fake_cutout_bytes()
 
-    shot = _shot(regions=[], setting="an empty hallway")
+    shot = _shot(regions=[])
 
     result = render_shot(
         shot=shot,
         characters={},
         character_cache={},
         background_cache={},
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=fake_generate_image,
         remove_background=spying_remove_background,
     )
@@ -819,18 +930,18 @@ def test_render_shot_with_no_regions_renders_a_background():
 
 def test_render_shot_with_no_regions_uses_the_background_cache():
     """
-    Verifies that rendering the same background-only shot twice only generates the background once.
+    Verifies that rendering the same background-only shot twice only generates its background (and master plate) once.
     """
     generate_image, calls = _make_background_fakes()
     background_cache: BackgroundCache = {}
-    shot = _shot(regions=[], setting="an empty hallway")
+    shot = _shot(regions=[])
 
     render_shot(
         shot=shot,
         characters={},
         character_cache={},
         background_cache=background_cache,
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=generate_image,
         remove_background=lambda raw: raw,
     )
@@ -839,35 +950,35 @@ def test_render_shot_with_no_regions_uses_the_background_cache():
         characters={},
         character_cache={},
         background_cache=background_cache,
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=generate_image,
         remove_background=lambda raw: raw,
     )
 
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2  # The master plate and the background, once each
 
 
 def test_render_shot_with_regions_renders_characters_and_background():
     """
     Verifies that a shot with regions renders its background as well as its characters.
 
-    That costs one background generation plus the character generations (here, one reference and one pose).
+    That costs a master plate and one background generation, plus the character generations (here, one reference and one pose).
     """
     generate_image, remove_background, calls = _make_fakes()
-    shot = _shot(regions=[_region()], setting="an empty hallway")
+    shot = _shot(regions=[_region()])
 
     result = render_shot(
         shot=shot,
         characters=_character(),
         character_cache={},
         background_cache={},
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
     assert len(result.image) > 0
-    assert calls["generate"] == 3
+    assert calls["generate"] == 4
 
 
 def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
@@ -879,14 +990,14 @@ def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
     generate_image, remove_background, calls = _make_fakes()
     character_cache: CutoutCache = {}
     background_cache: BackgroundCache = {}
-    shot = _shot(regions=[_region()], setting="an empty hallway")
+    shot = _shot(regions=[_region()])
 
     render_shot(
         shot=shot,
         characters=_character(),
         character_cache=character_cache,
         background_cache=background_cache,
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
@@ -895,12 +1006,12 @@ def test_render_shot_with_regions_reuses_both_caches_across_repeated_calls():
         characters=_character(),
         character_cache=character_cache,
         background_cache=background_cache,
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=generate_image,
         remove_background=remove_background,
     )
 
-    assert calls["generate"] == 3
+    assert calls["generate"] == 4
     assert ("alice", "standing", Orientation.TOWARDS_CAMERA.value, CameraAngle.EYE_LEVEL.value) in character_cache
 
 def test_render_shot_composites_characters_over_the_rendered_background():
@@ -935,14 +1046,14 @@ def test_render_shot_composites_characters_over_the_rendered_background():
         """
         return _fake_cutout_bytes()
 
-    shot = _shot(regions=[_region()], setting="an empty hallway")
+    shot = _shot(regions=[_region()])
 
     result = render_shot(
         shot=shot,
         characters=_character(),
         character_cache={},
         background_cache={},
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=fake_generate_image,
         remove_background=fake_remove_background,
     )
@@ -988,14 +1099,14 @@ def test_render_shot_passes_the_shots_angle_to_render_characters():
         """
         return _fake_cutout_bytes()
 
-    shot = _shot(regions=[_region()], setting="an empty hallway", angle=CameraAngle.LOW)
+    shot = _shot(regions=[_region()], angle=CameraAngle.LOW)
 
     render_shot(
         shot=shot,
         characters=_character(),
         character_cache={},
         background_cache={},
-        reference_cache={},
+        reference_cache={}, locations=_locations(), master_plate_cache={},
         generate_image=spying_generate_image,
         remove_background=fake_remove_background,
     )
@@ -1033,14 +1144,14 @@ def test_render_shot_passes_the_shots_shot_size_to_render_characters():
         """
         return _fake_cutout_bytes()
 
-    wide_shot = _shot(regions=[_region()], setting="an empty hallway", shot_size=ShotSize.WIDE)
-    close_up_shot = _shot(regions=[_region()], setting="an empty hallway", shot_size=ShotSize.CLOSE_UP)
+    wide_shot = _shot(regions=[_region()], shot_size=ShotSize.WIDE)
+    close_up_shot = _shot(regions=[_region()], shot_size=ShotSize.CLOSE_UP)
 
     wide_result = render_shot(
-        shot=wide_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={}, generate_image=fake_generate_image, remove_background=fake_remove_background,
+        shot=wide_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={}, locations=_locations(), master_plate_cache={}, generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
     close_up_result = render_shot(
-        shot=close_up_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={},  generate_image=fake_generate_image, remove_background=fake_remove_background,
+        shot=close_up_shot, characters=_character(), character_cache={}, background_cache={}, reference_cache={}, locations=_locations(), master_plate_cache={},  generate_image=fake_generate_image, remove_background=fake_remove_background,
     )
 
     assert wide_result.image != close_up_result.image
@@ -1240,7 +1351,7 @@ def test_render_shot_reports_a_left_out_character_in_its_result():
     generate_image, _, _ = _make_fakes()
     shot = _shot(regions=[_region()])
 
-    result = render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={},
+    result = render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={}, locations=_locations(), master_plate_cache={},
                          generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes())
 
     assert result.rejected_character_ids == ("alice",)
@@ -1255,7 +1366,7 @@ def test_render_shot_never_modifies_the_shot_it_is_given():
     shot = _shot(regions=[_region()])
     before = shot.model_copy(deep=True)
 
-    render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={},
+    render_shot(shot, _character(), character_cache={}, background_cache={}, reference_cache={}, locations=_locations(), master_plate_cache={},
                 generate_image=generate_image, remove_background=lambda raw: _transparent_cutout_bytes())
 
     assert shot == before
@@ -1268,7 +1379,7 @@ def test_render_shot_with_every_character_rendered_needs_no_review():
     """
     generate_image, remove_background, _ = _make_fakes()
 
-    result = render_shot(_shot(regions=[_region()]), _character(), character_cache={}, background_cache={}, reference_cache={},
+    result = render_shot(_shot(regions=[_region()]), _character(), character_cache={}, background_cache={}, reference_cache={}, locations=_locations(), master_plate_cache={},
                          generate_image=generate_image, remove_background=remove_background)
 
     assert result.rejected_character_ids == ()

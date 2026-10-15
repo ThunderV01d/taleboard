@@ -29,7 +29,7 @@ from taleboard.jobs.queue import JobQueue, parse_message
 from taleboard.parsing.story_breakdown import StoryBreakdown, break_down_story
 from taleboard.rendering.shot_renderer import RenderResult, render_shot
 from taleboard.schema.enums import ProjectStatus
-from taleboard.storage.caches import PersistentBackgroundCache, PersistentPoseCache, PersistentReferenceCache
+from taleboard.storage.caches import PersistentBackgroundCache, PersistentMasterPlateCache, PersistentPoseCache, PersistentReferenceCache
 from taleboard.storage.project_store import ProjectStore
 
 logging.getLogger("taleboard").setLevel(logging.INFO)  # Lambda only shows WARNING+ by default; this surfaces per-call timings
@@ -111,13 +111,14 @@ def run_job(
 
     if store.get_project(project_id).shot_count is None:
         breakdown = break_down(store.load_story(project_id, job_id))
-        store.save_breakdown(project_id, breakdown.characters, breakdown.shots)
+        store.save_breakdown(project_id, breakdown.characters, breakdown.shots, breakdown.locations)
 
     project = store.load_project(project_id)
     caches = {
         "character_cache": PersistentPoseCache(store, project_id),
         "background_cache": PersistentBackgroundCache(store, project_id),
         "reference_cache": PersistentReferenceCache(store, project_id),
+        "master_plate_cache": PersistentMasterPlateCache(store, project_id),
     }
     for index, shot in enumerate(project.shots):
         if shot.generated_frame is not None:
@@ -126,7 +127,7 @@ def run_job(
             store.release_job(project_id, job_id)  # Released before re-queuing, so the continuation can always claim it
             queue.enqueue(project_id, job_id)
             return JobOutcome.CONTINUED
-        result = render(shot, project.cast, **caches)
+        result = render(shot, project.cast, locations=project.locations, **caches)
         store.save_rendered_shot(project_id, index, shot, result.image, result.needs_review)
 
     store.finish_job(project_id, job_id, ProjectStatus.COMPLETE)

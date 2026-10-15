@@ -1,10 +1,10 @@
 """
 Unit tests for layout.
 
-Covers how a region's position, size and the shot size resolve into anchor points, target heights and paste boxes.
+Covers how a region's position, size and the shot size resolve into anchor points, target heights and paste boxes, and where a close-up is cropped.
 """
 import pytest
-from taleboard.rendering.layout import CANVAS_SIZE, resolve_paste_box, resolve_placement
+from taleboard.rendering.layout import CANVAS_SIZE, resolve_close_up_crop, resolve_paste_box, resolve_placement, resolve_shared_cell_offsets
 from taleboard.schema.enums import Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Region
 
@@ -266,3 +266,87 @@ def test_no_combination_ever_puts_a_head_above_the_frame():
             for shot_size in ShotSize:
                 _, paste_y, _, _ = resolve_paste_box(_region(position, size), cutout_width=100, cutout_height=300, shot_size=shot_size)
                 assert paste_y >= 0
+
+
+def test_a_close_up_is_cropped_to_a_padded_square_centred_on_its_figures():
+    """
+    Verifies that the crop is a square around every figure together, with padding on each side, centred on them.
+    """
+    left, top, right, bottom = resolve_close_up_crop([(300, 300, 400, 900), (450, 400, 550, 900)])
+
+    assert right - left == bottom - top == round(600 * 1.2)
+    assert ((left + right) // 2, (top + bottom) // 2) == (425, 600)
+
+
+def test_a_close_up_crop_never_enlarges_by_more_than_the_minimum_crop_allows():
+    """
+    Verifies that a small figure still gets a crop of at least the minimum size, so it is never blown up too far.
+    """
+    left, top, right, bottom = resolve_close_up_crop([(500, 600, 520, 640)])
+
+    assert right - left == bottom - top == 512
+
+
+def test_figures_filling_the_frame_leave_it_uncropped():
+    """
+    Verifies that the crop is never bigger than the canvas -- figures that already fill the frame are left as they are.
+    """
+    assert resolve_close_up_crop([(0, 16, CANVAS_SIZE, CANVAS_SIZE + 200)]) == (0, 0, CANVAS_SIZE, CANVAS_SIZE)
+
+
+def test_a_close_up_crop_near_an_edge_is_moved_back_inside_the_canvas():
+    """
+    Verifies that a crop which would run off the canvas is shifted back inside it, keeping its size; parts of a figure off the canvas are ignored.
+    """
+    left, top, right, bottom = resolve_close_up_crop([(-80, 500, 260, 1200)])
+
+    assert left == 0 and bottom == CANVAS_SIZE
+    assert right - left == bottom - top
+
+
+def test_a_close_up_with_no_figures_is_cropped_from_the_lower_middle_of_the_frame():
+    """
+    Verifies that a close-up with no figures is cropped at the minimum size, centred on the lower two-thirds of the frame, where figures would stand.
+    """
+    left, top, right, bottom = resolve_close_up_crop([])
+
+    assert right - left == bottom - top == 512
+    assert ((left + right) // 2, (top + bottom) // 2) == (CANVAS_SIZE // 2, CANVAS_SIZE * 2 // 3)
+
+
+def test_figures_in_cells_of_their_own_are_not_moved():
+    """
+    Verifies that only figures sharing a cell are spread -- every other figure keeps its cell's usual spot.
+    """
+    assert resolve_shared_cell_offsets([_region(PositionCell.MID_LEFT), _region(PositionCell.MID_RIGHT)]) == [0, 0]
+
+
+def test_two_figures_sharing_a_cell_are_spread_evenly_around_it():
+    """
+    Verifies that two figures in one cell are moved the same distance either side of it, about a figure's width apart.
+    """
+    left, right = resolve_shared_cell_offsets([_region(PositionCell.MID_CENTER), _region(PositionCell.MID_CENTER)])
+
+    assert left == -right and left < 0
+    assert right - left == round(resolve_placement(_region(PositionCell.MID_CENTER)).target_height * 0.3)
+
+
+def test_figures_sharing_a_cell_face_each_other():
+    """
+    Verifies that a figure facing right is put on the left of one facing left, whatever order the shot lists them in.
+    """
+    facing_left = _region(PositionCell.MID_CENTER).model_copy(update={"orientation": Orientation.LEFT})
+    facing_right = _region(PositionCell.MID_CENTER).model_copy(update={"orientation": Orientation.RIGHT})
+
+    offsets = resolve_shared_cell_offsets([facing_left, facing_right])
+
+    assert offsets[1] < 0 < offsets[0]
+
+
+def test_three_figures_sharing_a_cell_are_spread_with_the_middle_one_in_place():
+    """
+    Verifies that three figures in one cell are evenly spaced, with the middle one on the cell's usual spot.
+    """
+    offsets = resolve_shared_cell_offsets([_region(PositionCell.BOTTOM_LEFT)] * 3)
+
+    assert offsets[1] == 0 and offsets[0] == -offsets[2] and offsets[0] < 0

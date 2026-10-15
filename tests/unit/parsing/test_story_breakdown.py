@@ -6,12 +6,14 @@ Uses a fake LLM caller builder, so no LLM calls are made.
 Attributes:
     STORY: str - Three-paragraph story, with extra blank lines between the last two paragraphs.
     CAST_RESPONSE: str - Fake cast extraction response (JSON) with two characters, one of whom has an alias.
+    LOCATIONS_RESPONSE: str - Fake location extraction response (JSON) with one location.
+    NOTHING_FLAGGED: str - Fake contamination judge response (JSON) that flags nothing.
 """
 import json
 
 import pytest
 
-from taleboard.parsing.llm_schemas import LLMCastOutput, LLMJudgeOutput
+from taleboard.parsing.llm_schemas import LLMCastOutput, LLMJudgeOutput, LLMLocationsOutput
 from taleboard.parsing.story_breakdown import break_down_story, split_paragraphs
 
 STORY = "Alice waved.\n\nBob waved back.\n\n\n\nThey walked off together."
@@ -19,6 +21,10 @@ STORY = "Alice waved.\n\nBob waved back.\n\n\n\nThey walked off together."
 CAST_RESPONSE = json.dumps({"characters": [
     {"name": "Alice", "description": "A woman in a green coat.", "aliases": []},
     {"name": "Bob", "description": "A tall bearded man.", "aliases": ["the tall man"]},
+]})
+
+LOCATIONS_RESPONSE = json.dumps({"locations": [
+    {"name": "Street", "description": "a quiet street corner with a lamppost"},
 ]})
 
 NOTHING_FLAGGED = json.dumps({"texts": []})
@@ -35,7 +41,7 @@ def _shot_response(character_id: str, action: str) -> str:
         str - Shot breakdown response (JSON).
     """
     return json.dumps({"shots": [{
-        "description": action, "setting": "a quiet street", "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
+        "description": action, "location_id": "street", "details": "", "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
         "regions": [{"character_id": character_id, "position": "mid_center", "size": "medium",
                      "orientation": "towards_camera", "action": action}],
     }]})
@@ -45,7 +51,7 @@ def _fake_make_caller(prompts: list[str]):
     """
     Builds a fake LLM caller builder, matching the MakeCaller signature.
 
-    The cast schema is answered with CAST_RESPONSE, and each paragraph call with the next one-shot response. Every prompt is recorded. The contamination judge is answered with "nothing flagged", and its prompts aren't recorded, so these tests see only cast and paragraph calls.
+    The cast schema is answered with CAST_RESPONSE, and each paragraph call with the next one-shot response. Every prompt is recorded. Location extraction is answered with LOCATIONS_RESPONSE and the contamination judge with "nothing flagged", and neither's prompts are recorded, so these tests see only cast and paragraph calls.
 
     Arguments:
         prompts: list[str] - List that every prompt sent to the fake LLM is appended to.
@@ -78,6 +84,8 @@ def _fake_make_caller(prompts: list[str]):
             """
             if schema_model is LLMJudgeOutput:
                 return NOTHING_FLAGGED
+            if schema_model is LLMLocationsOutput:
+                return LOCATIONS_RESPONSE
             prompts.append(prompt)
             return CAST_RESPONSE if schema_model is LLMCastOutput else next(shot_responses)
         return call_llm
@@ -125,6 +133,19 @@ def test_break_dwon_story_converts_the_cast_to_domain_characters():
     assert set(breakdown.characters) == {"alice", "bob"}
     assert breakdown.characters["bob"].description == "A tall bearded man."
     assert breakdown.cast["bob"].aliases == ["the tall man"]
+
+
+def test_break_down_story_places_shots_in_the_extracted_locations():
+    """
+    Verifies that the extracted locations are listed in each paragraph's prompt, converted to domain locations, and used by the shots.
+    """
+    prompts: list[str] = []
+    breakdown = break_down_story(STORY, make_caller=_fake_make_caller(prompts))
+
+    assert "id: street, name: Street" in prompts[1]
+    assert breakdown.locations["street"].description == "a quiet street corner with a lamppost"
+    assert breakdown.locations["street"].master_plate is None
+    assert {shot.location_id for shot in breakdown.shots} == {"street"}
 
 def test_break_down_story_rejects_an_empty_story_before_any_llm_call():
     """

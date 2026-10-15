@@ -7,12 +7,15 @@ If a cutout is (close to) transparent, generation will be re-attempted a few tim
 
 Additionally, this module also contains caching logic used to save generation calls and preserve character consistency across shots -- the model generates a reference image on the first time it encounters a character. This reference image is cached and conditions future prompts containing that character (to preserve their facial likeness). Tangentially, the cutouts and background are also cached so that any shot that calls for a similar pose/background reuses the cache instead of wasting a separate generation call.
 
+Locations work the same way: the first time a location is needed, a master plate (a wide, eye-level view of the empty place) is generated and cached, and conditions every other background of that location -- so every shot in it shows the same room. A wide, eye-level shot with no details is the master plate itself. A close-up is never generated: it gets a wide background, and the compositor crops the finished frame.
+
 The caches only need get and [] =, so a plain dict works (eg:- in tests), as do the persistent caches in taleboard.storage.caches (which survive between Lambda invocations).
 
 Attributes:
     CutoutCache: ImageCache[tuple[str,str,str,str]] - Mapping between a specific character ID with a specific action pose in a specific orientation/angle and an already generated cutout image.
-    BackgroundCache: ImageCache[tuple[str,str,str]] - Mapping between a specific setting shot in a specific shot size with a specific angle and an already generated background image.
+    BackgroundCache: ImageCache[tuple[str,str,str,str]] - Mapping between a specific location with specific details, shot in a specific shot size with a specific angle, and an already generated background image.
     ReferenceImageCache: ImageCache[str] - Mapping between a specific character ID and an already generated cutout image (to be used as a reference).
+    MasterPlateCache: ImageCache[str] - Mapping between a specific location ID and its already generated master plate (to be used as a reference).
     GenerateImage: Callable[[str,str],bytes] - Image generation function. Takes a prompt and negative prompt and returns an image in bytes (usually comes from together_caller or is mocked during testing).
     RemoveBackground: Callable[[bytes],bytes] - Background removal function. Takes an image and returns a character cutout image in bytes (usually comes from background_removal or is mocked during testing).
     MIN_OPAQUE_FRACTION: float - Minimum threshold of opaque pixels, below which an image is considered a "transparent" image with no subject.
@@ -26,9 +29,9 @@ from typing import Callable, Protocol, TypeVar
 from PIL import Image
 
 from taleboard.rendering import background_removal, compositor, together_caller
-from taleboard.rendering.prompts import build_background_prompt, build_character_prompt
+from taleboard.rendering.prompts import build_background_prompt, build_character_prompt, build_master_plate_prompt
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
-from taleboard.schema.models import Character, Region, Shot
+from taleboard.schema.models import Character, Location, Region, Shot
 
 K = TypeVar("K", contravariant=True)
 
@@ -40,8 +43,9 @@ class ImageCache(Protocol[K]):
     def __setitem__(self, key: K, value: bytes, /) -> None: ...
 
 CutoutCache = ImageCache[tuple[str, str, str, str]]
-BackgroundCache = ImageCache[tuple[str, str, str]]
+BackgroundCache = ImageCache[tuple[str, str, str, str]]
 ReferenceImageCache = ImageCache[str]
+MasterPlateCache = ImageCache[str]
 
 GenerateImage = Callable[[str, str], bytes]
 RemoveBackground = Callable[[bytes], bytes]
@@ -259,19 +263,61 @@ def render_characters(
         cutouts[region.character_id] = cutout
     return compositor.compose_shot(regions, cutouts, shot_size, background)
 
-def _background_cache_key(setting: str, shot_size: ShotSize, angle: CameraAngle) -> tuple[str, str, str]:
+def _background_cache_key(location_id: str, details: str, shot_size: ShotSize, angle: CameraAngle) -> tuple[str, str, str, str]:
     """
-    Packs the scene setting, shot size, and angle into one single tuple to be used as a cache key for the background cache.
+    Packs the location ID, details, shot size, and angle into one single tuple to be used as a cache key for the background cache.
 
     Self-explanatory arguments and return value.
     """
-    return (setting, shot_size.value, angle.value)
+    return (location_id, details, shot_size.value, angle.value)
+
+def _background_framing(shot_size: ShotSize) -> ShotSize:
+    """
+    Picks the framing a shot's background is drawn at -- a close-up gets a wide background, which the compositor crops once the characters are on it.
+
+    Arguments:
+        shot_size: ShotSize - Size of the shot.
+
+    Returns:
+        ShotSize - WIDE for a close-up; otherwise the shot's own size.
+    """
+    return ShotSize.WIDE if shot_size == ShotSize.CLOSE_UP else shot_size
+
+def _get_or_create_master_plate(
+    location_id: str,
+    location: Location,
+    cache: MasterPlateCache,
+    generate_image: GenerateImage,
+) -> bytes:
+    """
+    Returns location_id's cached master plate.
+
+    The master plate is generated only once, the first time the location is needed -- from its description alone, as a wide, eye-level view of the empty place.
+
+    Arguments:
+        location_id: str - Unique location ID.
+        location: Location - Location whose master plate will be generated.
+        cache: MasterPlateCache - Cache where master plates will be dumped.
+        generate_image: GenerateImage - Image generation function (usually comes from together_caller or is mocked during testing).
+
+    Returns:
+        bytes - Master plate (in bytes).
+    """
+    master_plate = cache.get(location_id)
+    if master_plate is None:
+        prompt = build_master_plate_prompt(location)
+        master_plate = _to_monochrome(generate_image(prompt.text, prompt.negative_text))
+        cache[location_id] = master_plate
+    return master_plate
 
 def render_background(
-    setting: str,
+    location_id: str,
+    location: Location,
+    details: str,
     shot_size: ShotSize,
     angle: CameraAngle,
     cache: BackgroundCache,
+    master_plate_cache: MasterPlateCache,
     generate_image: GenerateImage = together_caller.generate_background_image,
 ) -> bytes:
     """
@@ -279,22 +325,33 @@ def render_background(
     
     This should be the first render pass, as the background is the layer that sits at the very bottom.
 
+    A wide, eye-level background with no details is the location's master plate itself. Anything else is generated with the master plate as a reference, so it shows the same place. A close-up gets the same background as a wide shot (see _background_framing).
+
     Arguments:
-        setting: str - Setting description of the shot.
+        location_id: str - Unique ID of the shot's location.
+        location: Location - The shot's location.
+        details: str - Small, visible changes to the location in this shot. "" if it looks as described.
         shot_size: ShotSize - Size of the shot.
         angle: CameraAngle - Camera angle of the shot.
         cache: BackgroundCache - Background cache used to save generation calls.
+        master_plate_cache: MasterPlateCache - Master plate cache, keeping every background of a location the same place.
         generate_image: GenerateImage - Image generation function (usually comes from together_caller or is mocked during testing).
 
     Returns:
         bytes - Generated background image (in bytes).
     """
-    key = _background_cache_key(setting, shot_size, angle)
+    details = details.strip()
+    framing = _background_framing(shot_size)
+    if framing == ShotSize.WIDE and angle == CameraAngle.EYE_LEVEL and not details:
+        return _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
+
+    key = _background_cache_key(location_id, details, framing, angle)
     background = cache.get(key)
  
     if background is None:
-        prompt = build_background_prompt(setting, shot_size, angle)
-        raw_image = generate_image(prompt.text, prompt.negative_text)
+        master_plate = _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
+        prompt = build_background_prompt(location, details, framing, angle)
+        raw_image = generate_image(prompt.text, prompt.negative_text, reference_images=[master_plate])
         background = _to_monochrome(raw_image)
         cache[key] = background
  
@@ -308,13 +365,19 @@ def render_shot(
     reference_cache: ReferenceImageCache,
     generate_image: GenerateImage | None = None,
     remove_background: RemoveBackground = background_removal.remove_background,
+    *,
+    locations: dict[str, Location],
+    master_plate_cache: MasterPlateCache,
 ) -> RenderResult:
+
     """
     Top-level entry point for rendering a shot, background and all.
     
-    Dispatches to a pure background render when the shot has no character regions at all -- eg:- an establishing shot, scenery etc.
+    Skips character rendering when the shot has no character regions at all -- eg:- an establishing shot, scenery etc.
 
     The shot itself is never modified. If any character was left out (their cutout was rejected), the result says so -- it is up to the caller to flag the shot for review.
+
+    Raises a ValueError if the shot's location isn't one of the given locations -- eg:- a shot broken down before locations existed, which has none.
 
     Arguments:
         shot: Shot - Shot to be rendered.
@@ -324,18 +387,23 @@ def render_shot(
         reference_cache: ReferenceImageCache - Character reference cache used to preserve character consistency between shots.
         generate_image: GenerateImage - Image generation function (usually comes from together_caller or is mocked during testing).
         remove_background: RemoveBackground - Background removal function (usually comes from background_removal or is mocked during testing).
-    
+        locations: dict[str,Location] - Mapping between location IDs and locations.
+        master_plate_cache: MasterPlateCache - Master plate cache, keeping every background of a location the same place.
+
     Returns:
         RenderResult - The composited image, plus any characters that were left out.
     """
     background_generate = generate_image or together_caller.generate_background_image
     character_generate = generate_image or together_caller.generate_character_image
 
-    background = render_background(shot.setting, shot.shot_size, shot.angle, background_cache, background_generate)
+    location = locations.get(shot.location_id) if shot.location_id is not None else None
+    if location is None:
+        raise ValueError(f"Shot has no known location ({shot.location_id!r}) -- resubmit the story to break it down again")
+    background = render_background(shot.location_id, location, shot.details, shot.shot_size, shot.angle, background_cache, master_plate_cache, background_generate)
 
     if not shot.regions:
-        return RenderResult(image=background)
- 
+        return RenderResult(image=compositor.compose_shot([], {}, shot.shot_size, background)) # Still composited, so a close-up is cropped
+
     rejected: list[str] = []
     image = render_characters(shot.regions, characters, character_cache, reference_cache, shot.angle, shot.shot_size, generate_image=character_generate, remove_background=remove_background, background=background, rejected=rejected)
     return RenderResult(image=image, rejected_character_ids=tuple(rejected))

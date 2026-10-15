@@ -184,6 +184,7 @@ def generate_background_image(
     steps: int | None = None,
     guidance_scale: float | None = None,
     seed: int | None = None,
+    reference_images: list[bytes] | None = None,
 ) -> bytes:
     """
     Generates one background image from a text prompt.
@@ -196,10 +197,11 @@ def generate_background_image(
         steps: int - Number of inference steps.
         guidance_scale: float - Guidance scale for prompt adherence.
         seed: int - Seed for reproducibility.
+        reference_images: list[bytes] - Location master plate to be included in the prompt (optionally). Defaults to None (for the master plate itself).
 
     Returns:
         bytes - Generated background image file (in bytes).
     """
     return _generate_image(
-        text, negative_text, BACKGROUND_WIDTH, BACKGROUND_HEIGHT, steps, guidance_scale, seed
+        text, negative_text, BACKGROUND_WIDTH, BACKGROUND_HEIGHT, steps, guidance_scale, seed, reference_images
     )

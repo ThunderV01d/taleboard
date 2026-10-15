@@ -22,7 +22,7 @@ from taleboard.parsing.llm_schemas import LLMCastOutput
 from taleboard.parsing.story_breakdown import StoryBreakdown
 from taleboard.rendering.shot_renderer import render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ProjectStatus, ShotSize, SizeInFrame
-from taleboard.schema.models import Character, Region, Shot
+from taleboard.schema.models import Character, Location, Region, Shot
 
 
 def _png() -> bytes:
@@ -39,17 +39,17 @@ def _png() -> bytes:
 
 def _shot(index: int, alice_action: str | None) -> Shot:
     """
-    Builds a shot with its own setting, optionally with Alice in it.
+    Builds a shot at the lighthouse with its own details, optionally with Alice in it.
 
     Arguments:
-        index: int - Used in the description and setting, and as the paragraph index.
+        index: int - Used in the description and details, and as the paragraph index.
         alice_action: str - Alice's action in the shot, or None to leave her out.
 
     Returns:
         Shot - A Shot object.
     """
     regions = [Region(character_id="alice", position=PositionCell.MID_CENTER, size=SizeInFrame.MEDIUM, orientation=Orientation.LEFT, action=alice_action)] if alice_action else []
-    return Shot(description=f"shot {index}", setting=f"setting {index}", regions=regions, paragraph_index=index,
+    return Shot(description=f"shot {index}", location_id="lighthouse", details=f"details {index}", regions=regions, paragraph_index=index,
                 shot_size=ShotSize.MEDIUM, angle=CameraAngle.EYE_LEVEL, duration_s=2.0)
 
 
@@ -57,7 +57,7 @@ def _fakes(crash_on_shot: int | None = None):
     """
     Builds a fake story breakdown and a fake renderer, both counting their calls.
 
-    The breakdown always returns 3 shots: Alice in shots 0 and 2, and none in shot 1. Uninterrupted, the job makes 6 generation calls -- shot 0: background + reference + pose; shot 1: background; shot 2: background + pose.
+    The breakdown always returns 3 shots: Alice in shots 0 and 2, and none in shot 1. Uninterrupted, the job makes 7 generation calls -- shot 0: master plate + background + reference + pose; shot 1: background; shot 2: background + pose.
 
     Arguments:
         crash_on_shot: int - Paragraph index of a shot whose first render attempt raises, simulating a worker crash. Defaults to None (no crash).
@@ -80,7 +80,8 @@ def _fakes(crash_on_shot: int | None = None):
         """
         calls["break_down"] += 1
         return StoryBreakdown(cast={}, characters={"alice": Character(name="Alice", description="A woman.")},
-                              shots=[_shot(0, "standing"), _shot(1, None), _shot(2, "waving")])
+                              shots=[_shot(0, "standing"), _shot(1, None), _shot(2, "waving")],
+                              locations={"lighthouse": Location(name="Lighthouse", description="a round stone lamp room")})
 
     def fake_generate(text: str, negative_text: str, reference_images: list[bytes] | None = None) -> bytes:
         """
@@ -159,7 +160,7 @@ def test_a_job_renders_every_shot_and_completes(store, queue):
     assert project.status == ProjectStatus.COMPLETE
     assert project.shot_count == 3
     assert all(shot.generated_frame for shot in project.shots)
-    assert calls == {"break_down": 1, "generate": 6}
+    assert calls == {"break_down": 1, "generate": 7}
 
 
 def test_a_crashed_job_resumes_without_repaying_or_re_breaking_down(store, queue):
@@ -182,7 +183,7 @@ def test_a_crashed_job_resumes_without_repaying_or_re_breaking_down(store, queue
     store.release_job(pid, "job-1")  # What the handler does on a retryable failure (or what lease expiry does after a hard crash)
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.COMPLETE
 
-    assert calls == {"break_down": 1, "generate": 6}
+    assert calls == {"break_down": 1, "generate": 7}
     assert [s.paragraph_index for s in store.list_shots(pid)] == [0, 1, 2]
 
 
@@ -204,7 +205,7 @@ def test_a_job_running_out_of_time_hands_itself_over(store, queue):
     messages = queue._sqs.receive_message(QueueUrl=queue._queue_url)["Messages"]
     assert json.loads(messages[0]["Body"]) == {"project_id": pid, "job_id": "job-1"}
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.COMPLETE
-    assert calls == {"break_down": 1, "generate": 6}
+    assert calls == {"break_down": 1, "generate": 7}
 
 
 def test_a_duplicate_delivery_of_a_running_job_is_retried_later(store, queue):
@@ -238,7 +239,7 @@ def test_redelivering_a_finished_job_does_nothing(store, queue):
     run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render)
 
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.SKIPPED
-    assert calls == {"break_down": 1, "generate": 6}
+    assert calls == {"break_down": 1, "generate": 7}
 
 
 def _sqs_event(project_id: str, attempt: int) -> dict:

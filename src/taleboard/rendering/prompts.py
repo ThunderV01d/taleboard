@@ -11,12 +11,13 @@ Attributes:
     CAMERA_ANGLE_PHRASES: dict[CameraAngle,str] - Mapping between CameraAngle enums and natural language phrases used in the prompt.
     BACKGROUND_STYLE_PREFIX: str - Instructions for the model to adhere to a specific style guideline (in the background).
     BACKGROUND_NEGATIVE_PROMPT: str - Negative prompt instructions for the model to avoid generating certain things (in the background).
-    SHOT_SIZE_PHRASES: dict[ShotSize,str] - Mapping between ShotSize enums and natural language phrases used in the prompt.
+    MASTER_PLATE_FRAMING: str - Framing of a location's master plate -- a wide, eye-level view of the whole place, which every other background of it is drawn from.
+    COMPOSITION_PHRASES: dict[tuple[ShotSize,CameraAngle],str] - Mapping between (shot size, camera angle) and where the camera is relative to the master plate, used in the prompt.
 """
 from dataclasses import dataclass
 
 from taleboard.schema.enums import CameraAngle, Orientation, ShotSize
-from taleboard.schema.models import Character, Region
+from taleboard.schema.models import Character, Location, Region
 
 STYLE_PREFIX = (
     "Storyboard panel, pencil sketch, black and white line art, "
@@ -87,36 +88,78 @@ def build_character_prompt(character: Character, region: Region, angle: CameraAn
 
 BACKGROUND_STYLE_PREFIX = (
     "Pencil sketch, black and white line art, filling full frame, "
-    "environment establishing shot, no shading or lighting, rough hand-drawn illustration style, "
+    "no shading or lighting, rough hand-drawn illustration style, "
     "no signature, no text, no watermark, "
 )
 
 BACKGROUND_NEGATIVE_PROMPT = ""
 
-SHOT_SIZE_PHRASES: dict[ShotSize, str] = {
-    ShotSize.CLOSE_UP: "close-up framing, tightly framed on the subject, ",
-    ShotSize.MEDIUM: "medium shot framing, ",
-    ShotSize.WIDE: "wide shot, expansive view of the scene, ",
+MASTER_PLATE_FRAMING = "wide shot, establishing view of the whole place at eye level, empty, with nobody in it, "
+
+# Every background except the master plate is drawn with the master plate as image 1. Without saying exactly where the camera has moved to,
+# FLUX treats the reference as an image to edit and keeps its framing -- so each phrase says where the camera is and what is in and out of frame.
+# Close-ups have no entry: they are cropped from a finished wide shot instead (see shot_renderer), which keeps the room exactly the same.
+_SAME_PLACE = "keeping everything in the place, its layout and the drawing style the same as image 1, "
+COMPOSITION_PHRASES: dict[tuple[ShotSize, CameraAngle], str] = {
+    (ShotSize.WIDE, CameraAngle.EYE_LEVEL): "the same view of the place in image 1, from the same camera position and with the same framing, ",
+    (ShotSize.WIDE, CameraAngle.LOW): (
+        "a new view of the place in image 1, with the camera close to the ground looking steeply upward: the sky or ceiling and the tops "
+        "of the nearest structures fill the upper half of the frame, and very little of the ground or floor is visible, " + _SAME_PLACE
+    ),
+    (ShotSize.WIDE, CameraAngle.HIGH): (
+        "a new view of the place in image 1, with the camera high up looking steeply down: the ground or floor and the layout of "
+        "everything on it fill the frame, seen from above, and the sky or ceiling is out of frame, " + _SAME_PLACE
+    ),
+    (ShotSize.MEDIUM, CameraAngle.EYE_LEVEL): (
+        "a new, closer view of the place in image 1, with the camera a few steps further in at eye level: the middle of the place "
+        "fills the frame, and the left and right edges of image 1 are out of frame, " + _SAME_PLACE
+    ),
+    (ShotSize.MEDIUM, CameraAngle.LOW): (
+        "a new, closer view of the place in image 1, with the camera a few steps further in and close to the ground, looking upward: "
+        "the nearest objects tower over the viewer and the sky or ceiling fills the top of the frame, " + _SAME_PLACE
+    ),
+    (ShotSize.MEDIUM, CameraAngle.HIGH): (
+        "a new, closer view of the place in image 1, with the camera a few steps further in and above head height, looking down: "
+        "the ground or floor and the tops of the nearest objects fill the frame, and the sky or ceiling is out of frame, " + _SAME_PLACE
+    ),
 }
 
-def build_background_prompt(setting: str, shot_size: ShotSize, angle: CameraAngle) -> RenderPrompt:
+def build_master_plate_prompt(location: Location) -> RenderPrompt:
     """
-    Builds the FLUX prompt for generating a shot's background/environment.
-    
-    Incorporates the shot size and angle alongside the shot 'setting' (which is where the real background information lives).
+    Builds the FLUX prompt for generating a location's master plate -- the one background of it drawn from text alone.
 
     Arguments:
-        setting: str - Setting of the shot whose background is to be generated. Arguably, the most important part of the prompt.
-        shot_size: ShotSize - Size of the shot being composited.
+        location: Location - Location whose master plate is to be generated.
+
+    Returns:
+        RenderPrompt - A RenderPrompt object, representing the master plate prompt to be handed off to the model.
+    """
+    return RenderPrompt(
+        text=BACKGROUND_STYLE_PREFIX + MASTER_PLATE_FRAMING + location.description,
+        negative_text=BACKGROUND_NEGATIVE_PROMPT,
+    )
+
+def build_background_prompt(location: Location, details: str, shot_size: ShotSize, angle: CameraAngle) -> RenderPrompt:
+    """
+    Builds the FLUX prompt for generating a shot's background/environment, to be drawn with the location's master plate as image 1.
+
+    Incorporates where the camera is relative to the master plate (from the shot size and angle), the location's description, and the shot's details (what looks different in this shot).
+
+    Raises a KeyError for a close-up, which is never generated (see COMPOSITION_PHRASES).
+
+    Arguments:
+        location: Location - Location the shot takes place in.
+        details: str - Small, visible changes to the location in this shot. "" if it looks as described.
+        shot_size: ShotSize - Size of the shot being composited (WIDE or MEDIUM).
         angle: CameraAngle - Camera angle to be used in the generation.
 
     Returns:
         RenderPrompt - A RenderPrompt object, representing the background prompt to be handed off to the model.
     """
-    size_phrase = SHOT_SIZE_PHRASES[shot_size]
-    angle_phrase = CAMERA_ANGLE_PHRASES[angle]
- 
+    composition_phrase = COMPOSITION_PHRASES[(shot_size, angle)]
+    details_phrase = f", changed only as follows: {details}" if details else ""
+
     return RenderPrompt(
-        text=BACKGROUND_STYLE_PREFIX + size_phrase + angle_phrase + setting,
+        text=BACKGROUND_STYLE_PREFIX + composition_phrase + location.description + details_phrase,
         negative_text=BACKGROUND_NEGATIVE_PROMPT,
     )

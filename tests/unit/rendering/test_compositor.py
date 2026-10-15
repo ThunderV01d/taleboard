@@ -276,3 +276,74 @@ def test_transparent_padding_below_a_figure_is_trimmed_so_its_feet_land_on_the_a
     anchor = resolve_placement(region)
 
     assert _pixel(result, anchor.anchor_x, anchor.anchor_y - 3) == (255, 0, 0)
+
+
+def _marked_background(mark_box: tuple[int, int, int, int]) -> bytes:
+    """
+    Builds a full-size green background with one blue rectangle on it, so where a crop lands can be checked by sampling pixels.
+
+    Arguments:
+        mark_box: tuple[int,int,int,int] - (left, top, right, bottom) of the blue rectangle.
+
+    Returns:
+        bytes - Background image file (PNG, in bytes).
+    """
+    image = Image.new("RGBA", (CANVAS_SIZE, CANVAS_SIZE), GREEN)
+    image.paste(Image.new("RGBA", (mark_box[2] - mark_box[0], mark_box[3] - mark_box[1]), BLUE), mark_box[:2])
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_a_close_up_is_cropped_around_its_figure_after_compositing():
+    """
+    Verifies that a close-up's finished frame is cropped around its figure and enlarged back to the full canvas -- the background's top-left corner is cropped away, and the figure fills more of the frame than it was pasted at.
+    """
+    background = _marked_background((0, 0, 100, 100))
+    region = _region("alice", PositionCell.MID_CENTER)
+    cutouts = {"alice": _solid_cutout(RED, size=(100, 100))}
+
+    medium = compose_shot([region], cutouts, ShotSize.MEDIUM, background)
+    close_up = compose_shot([region], cutouts, ShotSize.CLOSE_UP, background)
+
+    assert Image.open(io.BytesIO(close_up)).size == (CANVAS_SIZE, CANVAS_SIZE)
+    assert _pixel(medium, 0, 0) == BLUE[:3]
+    assert _pixel(close_up, 0, 0) == GREEN[:3]
+    red_pixels = {color: count for count, color in Image.open(io.BytesIO(close_up)).convert("RGB").getcolors(CANVAS_SIZE * CANVAS_SIZE)}[(255, 0, 0)]
+    pasted_height = resolve_placement(region, ShotSize.WIDE).target_height  # A close-up's figures are pasted at a wide shot's scale -- this tall, and as wide
+    assert red_pixels > pasted_height * pasted_height  # Enlarged beyond its pasted size
+
+
+def test_a_close_up_with_no_figures_is_cropped_from_the_lower_middle():
+    """
+    Verifies that a close-up with no figures still gets cropped -- to the lower middle of the frame, cutting away the background's bottom edge.
+    """
+    background = _marked_background((0, CANVAS_SIZE - 20, CANVAS_SIZE, CANVAS_SIZE))
+
+    medium = compose_shot([], {}, ShotSize.MEDIUM, background)
+    close_up = compose_shot([], {}, ShotSize.CLOSE_UP, background)
+
+    assert _pixel(medium, CANVAS_SIZE // 2, CANVAS_SIZE - 1) == BLUE[:3]
+    assert _pixel(close_up, CANVAS_SIZE // 2, CANVAS_SIZE - 1) == GREEN[:3]
+
+
+def test_two_characters_sharing_a_cell_are_both_visible():
+    """
+    Verifies that two characters given the same cell are drawn side by side -- before, the second was pasted exactly over the first and hid them completely.
+    """
+    regions = [_region("alice", PositionCell.MID_CENTER), _region("bob", PositionCell.MID_CENTER)]
+    cutouts = {"alice": _solid_cutout(RED, size=(30, 100)), "bob": _solid_cutout(BLUE, size=(30, 100))}
+
+    colours = {color for _, color in Image.open(io.BytesIO(compose_shot(regions, cutouts))).convert("RGB").getcolors(CANVAS_SIZE * CANVAS_SIZE)}
+
+    assert {(255, 0, 0), (0, 0, 255)} <= colours
+
+
+def test_a_character_with_two_regions_is_drawn_once_at_the_first():
+    """
+    Verifies that a character given two regions is drawn once, at their first region -- not twice, side by side.
+    """
+    regions = [_region("alice", PositionCell.MID_LEFT), _region("alice", PositionCell.MID_LEFT)]
+    cutouts = {"alice": _solid_cutout(RED)}
+
+    assert compose_shot(regions, cutouts) == compose_shot(regions[:1], cutouts)

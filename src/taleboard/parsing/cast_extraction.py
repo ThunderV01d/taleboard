@@ -9,14 +9,17 @@ Attributes:
 import re
 
 from collections import Counter
+from typing import TypeVar
 from pydantic import ValidationError
 
 from taleboard.parsing.bedrock_caller import CallLLM
 from taleboard.schema.models import Character
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput, LLMLocationDraft
 from taleboard.parsing.prompts import build_cast_extraction_prompt
 
 CAST_RETRIES = 1
+
+Draft = TypeVar("Draft", LLMCharacterDraft, LLMLocationDraft)
 
 def slugify(name: str) -> str:
     """
@@ -36,37 +39,37 @@ def slugify(name: str) -> str:
     slug = slug.strip("_")
     return slug or "character" # Fallback
 
-def assign_char_ids(characters:list[LLMCharacterDraft]) -> dict[str,LLMCharacterDraft]:
+def assign_ids(drafts: list[Draft]) -> dict[str, Draft]:
     """
-    Assigns a unique ID to each character based on their name.
+    Assigns a unique ID to each draft (a character or a location) based on its name.
 
-    If multiple characters have the same name, a numeric suffix is added to make the IDs unique.
+    If multiple drafts have the same name, a numeric suffix is added to make the IDs unique.
     Also ensures there will be no collisions with the suffix-appended IDs.
 
     Arguments:
-        characters: list[LLMCharacterDraft] - List of characters catalogued by the LLM.
+        drafts: list[LLMCharacterDraft|LLMLocationDraft] - List of characters (or locations) catalogued by the LLM.
 
     Returns:
-        dict[str,LLMCharacterDraft] - Mapping of unique character IDs to each character catalogued by the LLM.
+        dict[str,LLMCharacterDraft|LLMLocationDraft] - Mapping of unique IDs to each character (or location) catalogued by the LLM.
     """
-    base_slugs = [slugify(c.name) for c in characters]
+    base_slugs = [slugify(d.name) for d in drafts]
     counts = Counter(base_slugs)
     next_suffix: dict[str, int] = {}
-    result: dict[str, LLMCharacterDraft] = {}
-    for character, base in zip(characters, base_slugs):
+    result: dict[str, Draft] = {}
+    for draft, base in zip(drafts, base_slugs):
         if counts[base] == 1:
             candidate = base
         else:
             n = next_suffix.get(base, 0) + 1
             next_suffix[base] = n
             candidate = f"{base}_{n}"
-        # Global safety net: never overwrite an ID another character already has
+        # Global safety net: never overwrite an ID another draft already has
         final = candidate
         bump = 2
         while final in result:
             final = f"{candidate}_{bump}"
             bump += 1
-        result[final] = character
+        result[final] = draft
     return result
 
 
@@ -93,7 +96,7 @@ def extract_cast(
         response_text = call_llm(prompt)
         try:
             output = LLMCastOutput.model_validate_json(response_text) # Ensures output validation against our model (malformed JSON fails here too)
-            return assign_char_ids(output.characters)
+            return assign_ids(output.characters)
         except ValidationError as e:
             if attempt == CAST_RETRIES:
                 raise

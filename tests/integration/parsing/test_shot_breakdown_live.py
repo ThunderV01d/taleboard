@@ -10,7 +10,7 @@ Attributes:
 import pytest
 
 from taleboard.parsing.bedrock_caller import make_bedrock_caller
-from taleboard.parsing.cast_extraction import assign_char_ids
+from taleboard.parsing.cast_extraction import assign_ids
 from taleboard.parsing.llm_schemas import LLMCharacterDraft, build_paragraph_output_model
 from taleboard.parsing.shot_breakdown import get_shots_for_paragraph
 
@@ -29,7 +29,7 @@ def _make_cast() -> dict[str, LLMCharacterDraft]:
         LLMCharacterDraft(name="Alice", description="A young woman with short red hair, wearing a green coat."),
         LLMCharacterDraft(name="Bob", description="A tall man with a beard, wearing a blue jacket."),
     ]
-    return assign_char_ids(drafts)
+    return assign_ids(drafts)
 
 
 @pytest.mark.integration
