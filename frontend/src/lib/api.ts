@@ -11,6 +11,9 @@ export type Project = components["schemas"]["ProjectOut"]
 export type JobStatus = components["schemas"]["StatusOut"]
 export type ProjectStatus = components["schemas"]["ProjectStatus"]
 export type Shot = components["schemas"]["ShotOut"]
+export type Region = components["schemas"]["Region"]
+export type Character = components["schemas"]["CharacterOut"]
+export type Location = components["schemas"]["LocationOut"]
 
 const apiUrl = import.meta.env.VITE_API_URL
 const apiKey = import.meta.env.VITE_API_KEY
@@ -108,6 +111,30 @@ export async function getStatus(projectId: string): Promise<JobStatus> {
 export async function getShots(projectId: string): Promise<Shot[]> {
   return unwrap(
     await api.GET("/projects/{project_id}/shots", {
+      params: { path: { project_id: projectId } },
+    })
+  )
+}
+
+
+/** Every project, newest first -- metadata and job state only */
+export async function getProjects(): Promise<Project[]> {
+  return unwrap(await api.GET("/projects"))
+}
+
+/** The project's cast, each with a fresh, short-lived reference image URL once one exists */
+export async function getCharacters(projectId: string): Promise<Character[]> {
+  return unwrap(
+    await api.GET("/projects/{project_id}/characters", {
+      params: { path: { project_id: projectId } },
+    })
+  )
+}
+
+/** The project's locations, each with a fresh, short-lived master plate URL once one exists */
+export async function getLocations(projectId: string): Promise<Location[]> {
+  return unwrap(
+    await api.GET("/projects/{project_id}/locations", {
       params: { path: { project_id: projectId } },
     })
   )

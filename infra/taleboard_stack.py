@@ -45,7 +45,8 @@ HAIKU_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
 class TaleboardStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
-        cors_origin = self.node.try_get_context("corsOrigin") or "*"
+        # Comma-separated, so the deployed frontend and local development (npm run dev) can both be allowed
+        cors_origins = [origin.strip() for origin in (self.node.try_get_context("corsOrigin") or "*").split(",") if origin.strip()]
         alarm_email = self.node.try_get_context("alarmEmail")
 
         # Storage
@@ -154,7 +155,7 @@ class TaleboardStack(Stack):
         http_api = apigw.HttpApi(
             self, "HttpApi",
             cors_preflight=apigw.CorsPreflightOptions(
-                allow_origins=[cors_origin],
+                allow_origins=cors_origins,
                 allow_methods=[apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST],
                 allow_headers=["content-type", "x-api-key"],
                 max_age=Duration.hours(1),

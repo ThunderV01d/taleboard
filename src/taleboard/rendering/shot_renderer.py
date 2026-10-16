@@ -7,7 +7,7 @@ If a cutout is (close to) transparent, generation will be re-attempted a few tim
 
 Additionally, this module also contains caching logic used to save generation calls and preserve character consistency across shots -- the model generates a reference image on the first time it encounters a character. This reference image is cached and conditions future prompts containing that character (to preserve their facial likeness). Tangentially, the cutouts and background are also cached so that any shot that calls for a similar pose/background reuses the cache instead of wasting a separate generation call.
 
-Locations work the same way: the first time a location is needed, a master plate (a wide, eye-level view of the empty place) is generated and cached, and conditions every other background of that location -- so every shot in it shows the same room. A wide, eye-level shot with no details is the master plate itself. A close-up is never generated: it gets a wide background, and the compositor crops the finished frame.
+Locations work the same way: the first time a location is needed, a master plate (a wide, eye-level view of the empty place) is generated and cached, and conditions every other background of that location -- so every shot in it shows the same room. A wide, eye-level shot with no details is the master plate itself. Each generation changes one thing only: another framing is drawn from the master plate, and a shot's details are drawn as an edit of its framing without them -- doing both at once let the room drift. A close-up is never generated: it gets a wide background, and the compositor crops the finished frame.
 
 The caches only need get and [] =, so a plain dict works (eg:- in tests), as do the persistent caches in taleboard.storage.caches (which survive between Lambda invocations).
 
@@ -19,6 +19,7 @@ Attributes:
     GenerateImage: Callable[[str,str],bytes] - Image generation function. Takes a prompt and negative prompt and returns an image in bytes (usually comes from together_caller or is mocked during testing).
     RemoveBackground: Callable[[bytes],bytes] - Background removal function. Takes an image and returns a character cutout image in bytes (usually comes from background_removal or is mocked during testing).
     MIN_OPAQUE_FRACTION: float - Minimum threshold of opaque pixels, below which an image is considered a "transparent" image with no subject.
+    MAX_PARTIAL_FRACTION: float - Maximum share of a cutout's visible pixels that may be only partly opaque, above which the figure is considered see-through.
     MAX_CUTOUT_ATTEMPTS: int - Number of attempts to generate a failed character cutout region before abandoning it.
     _NEUTRAL_REFERENCE_ACTION: str - Describes a neutral pose for the reference image generation.
 """
@@ -29,7 +30,7 @@ from typing import Callable, Protocol, TypeVar
 from PIL import Image
 
 from taleboard.rendering import background_removal, compositor, together_caller
-from taleboard.rendering.prompts import build_background_prompt, build_character_prompt, build_master_plate_prompt
+from taleboard.rendering.prompts import build_background_prompt, build_character_prompt, build_detail_prompt, build_master_plate_prompt
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Location, Region, Shot
 
@@ -51,11 +52,14 @@ GenerateImage = Callable[[str, str], bytes]
 RemoveBackground = Callable[[bytes], bytes]
 
 MIN_OPAQUE_FRACTION = 0.08 # 8% opacity
+MAX_PARTIAL_FRACTION = 0.6 # Measured on 87 real cutouts: good ones sit at 3-46% (a soft shadow beside the figure is the usual culprit), see-through ones at 73% and 98%
+_VISIBLE_ALPHA = 16 # Fainter pixels are background removal's edge noise, not part of the figure
+_SOLID_ALPHA = 224
 MAX_CUTOUT_ATTEMPTS = 2
 
 class CutoutRejectedError(RuntimeError):
     """
-    Raised when remove_background finds no usable subject, even after regenerating the image.
+    Raised when remove_background finds no usable subject -- nothing there, or a see-through figure -- even after regenerating the image.
     """
 
 def _cache_key(character_id: str, action: str, orientation: Orientation, angle: CameraAngle) -> tuple[str, str, str, str]:
@@ -110,6 +114,29 @@ def _opaque_fraction(image_bytes: bytes) -> float:
     opaque = sum(image.getchannel("A").histogram()[128:])
     return opaque / (image.width * image.height)
 
+
+def _partial_fraction(image_bytes: bytes) -> float:
+    """
+    Computes the share of an image's visible pixels that are only partly opaque.
+
+    A solid figure is opaque inside, with partial opacity only at its edges; a see-through one (background removal unsure where the figure ends) is partly opaque throughout.
+
+    Note: An image with no alpha channel counts as fully solid.
+
+    Arguments:
+        image_bytes: bytes - Image file (in bytes).
+
+    Returns:
+        float - Fraction of visible pixels (alpha of _VISIBLE_ALPHA or more) that are below _SOLID_ALPHA. 0 if nothing is visible.
+    """
+    image = Image.open(io.BytesIO(image_bytes))
+    if "A" not in image.getbands():
+        return 0.0
+    histogram = image.getchannel("A").histogram()
+    visible = sum(histogram[_VISIBLE_ALPHA:])
+    return sum(histogram[_VISIBLE_ALPHA:_SOLID_ALPHA]) / visible if visible else 0.0
+
+
 def _generate_cutout(
     text: str,
     negative_text: str,
@@ -118,9 +145,9 @@ def _generate_cutout(
     reference_images: list[bytes] | None = None,
 ) -> bytes:
     """
-    Generates an image and isolates its subject, regenerating if the cutout comes back (near-)empty.
-    
-    Uses the helper function defined above to check if the cutout is (near-)empty.
+    Generates an image and isolates its subject, regenerating if the cutout comes back (near-)empty or see-through.
+
+    Uses the helper functions defined above to check the cutout.
 
     Arguments:
         text: str - Prompt to be used to generate the image.
@@ -135,9 +162,9 @@ def _generate_cutout(
     extra = {"reference_images": reference_images} if reference_images else {} # Optional part of the prompt
     for _ in range(MAX_CUTOUT_ATTEMPTS):
         cutout = remove_background(generate_image(text, negative_text, **extra))
-        if _opaque_fraction(cutout) >= MIN_OPAQUE_FRACTION:
+        if _opaque_fraction(cutout) >= MIN_OPAQUE_FRACTION and _partial_fraction(cutout) <= MAX_PARTIAL_FRACTION:
             return cutout
-    raise CutoutRejectedError(f"background removal found no subject after {MAX_CUTOUT_ATTEMPTS} generations: {text[:120]!r}")
+    raise CutoutRejectedError(f"background removal found no usable subject after {MAX_CUTOUT_ATTEMPTS} generations: {text[:120]!r}")
 
 
 @dataclass(frozen=True)
@@ -310,6 +337,44 @@ def _get_or_create_master_plate(
         cache[location_id] = master_plate
     return master_plate
 
+
+def _get_or_create_framing(
+    location_id: str,
+    location: Location,
+    framing: ShotSize,
+    angle: CameraAngle,
+    cache: BackgroundCache,
+    master_plate_cache: MasterPlateCache,
+    generate_image: GenerateImage,
+) -> bytes:
+    """
+    Returns a location's background at a framing, without any details -- the master plate itself for a wide, eye-level framing, or else a re-framing drawn from it.
+
+    Arguments:
+        location_id: str - Unique ID of the location.
+        location: Location - The location.
+        framing: ShotSize - Framing to draw it at (WIDE or MEDIUM; see _background_framing).
+        angle: CameraAngle - Camera angle to draw it at.
+        cache: BackgroundCache - Background cache used to save generation calls.
+        master_plate_cache: MasterPlateCache - Master plate cache, keeping every background of a location the same place.
+        generate_image: GenerateImage - Image generation function (usually comes from together_caller or is mocked during testing).
+
+    Returns:
+        bytes - The background (in bytes).
+    """
+    if framing == ShotSize.WIDE and angle == CameraAngle.EYE_LEVEL:
+        return _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
+
+    key = _background_cache_key(location_id, "", framing, angle)
+    background = cache.get(key)
+    if background is None:
+        master_plate = _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
+        prompt = build_background_prompt(location, framing, angle)
+        background = _to_monochrome(generate_image(prompt.text, prompt.negative_text, reference_images=[master_plate]))
+        cache[key] = background
+    return background
+
+
 def render_background(
     location_id: str,
     location: Location,
@@ -325,7 +390,7 @@ def render_background(
     
     This should be the first render pass, as the background is the layer that sits at the very bottom.
 
-    A wide, eye-level background with no details is the location's master plate itself. Anything else is generated with the master plate as a reference, so it shows the same place. A close-up gets the same background as a wide shot (see _background_framing).
+    Without details, this is the location at the shot's framing (see _get_or_create_framing). With details, that same background is edited to add them -- so the first shot with details at a framing nobody has used yet costs two generations, and every later one costs one. A close-up gets the same background as a wide shot (see _background_framing).
 
     Arguments:
         location_id: str - Unique ID of the shot's location.
@@ -342,20 +407,18 @@ def render_background(
     """
     details = details.strip()
     framing = _background_framing(shot_size)
-    if framing == ShotSize.WIDE and angle == CameraAngle.EYE_LEVEL and not details:
-        return _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
+    if not details:
+        return _get_or_create_framing(location_id, location, framing, angle, cache, master_plate_cache, generate_image)
 
     key = _background_cache_key(location_id, details, framing, angle)
     background = cache.get(key)
- 
     if background is None:
-        master_plate = _get_or_create_master_plate(location_id, location, master_plate_cache, generate_image)
-        prompt = build_background_prompt(location, details, framing, angle)
-        raw_image = generate_image(prompt.text, prompt.negative_text, reference_images=[master_plate])
-        background = _to_monochrome(raw_image)
+        without_details = _get_or_create_framing(location_id, location, framing, angle, cache, master_plate_cache, generate_image)
+        prompt = build_detail_prompt(location, details)
+        background = _to_monochrome(generate_image(prompt.text, prompt.negative_text, reference_images=[without_details]))
         cache[key] = background
- 
     return background
+
 
 def render_shot(
     shot: Shot,

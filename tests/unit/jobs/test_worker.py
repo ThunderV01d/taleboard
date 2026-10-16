@@ -57,7 +57,7 @@ def _fakes(crash_on_shot: int | None = None):
     """
     Builds a fake story breakdown and a fake renderer, both counting their calls.
 
-    The breakdown always returns 3 shots: Alice in shots 0 and 2, and none in shot 1. Uninterrupted, the job makes 7 generation calls -- shot 0: master plate + background + reference + pose; shot 1: background; shot 2: background + pose.
+    The breakdown always returns 3 shots: Alice in shots 0 and 2, and none in shot 1. Every shot has its own details, so uninterrupted, the job makes 8 generation calls -- shot 0: master plate + medium background + its details + reference + pose; shot 1: its details; shot 2: its details + pose.
 
     Arguments:
         crash_on_shot: int - Paragraph index of a shot whose first render attempt raises, simulating a worker crash. Defaults to None (no crash).
@@ -160,7 +160,7 @@ def test_a_job_renders_every_shot_and_completes(store, queue):
     assert project.status == ProjectStatus.COMPLETE
     assert project.shot_count == 3
     assert all(shot.generated_frame for shot in project.shots)
-    assert calls == {"break_down": 1, "generate": 7}
+    assert calls == {"break_down": 1, "generate": 8}
 
 
 def test_a_crashed_job_resumes_without_repaying_or_re_breaking_down(store, queue):
@@ -183,7 +183,7 @@ def test_a_crashed_job_resumes_without_repaying_or_re_breaking_down(store, queue
     store.release_job(pid, "job-1")  # What the handler does on a retryable failure (or what lease expiry does after a hard crash)
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.COMPLETE
 
-    assert calls == {"break_down": 1, "generate": 7}
+    assert calls == {"break_down": 1, "generate": 8}
     assert [s.paragraph_index for s in store.list_shots(pid)] == [0, 1, 2]
 
 
@@ -205,7 +205,7 @@ def test_a_job_running_out_of_time_hands_itself_over(store, queue):
     messages = queue._sqs.receive_message(QueueUrl=queue._queue_url)["Messages"]
     assert json.loads(messages[0]["Body"]) == {"project_id": pid, "job_id": "job-1"}
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.COMPLETE
-    assert calls == {"break_down": 1, "generate": 7}
+    assert calls == {"break_down": 1, "generate": 8}
 
 
 def test_a_duplicate_delivery_of_a_running_job_is_retried_later(store, queue):
@@ -239,7 +239,7 @@ def test_redelivering_a_finished_job_does_nothing(store, queue):
     run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render)
 
     assert run_job(store, queue, pid, "job-1", _plenty_of_time, break_down, render) == JobOutcome.SKIPPED
-    assert calls == {"break_down": 1, "generate": 7}
+    assert calls == {"break_down": 1, "generate": 8}
 
 
 def _sqs_event(project_id: str, attempt: int) -> dict:

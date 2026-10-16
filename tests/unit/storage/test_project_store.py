@@ -354,10 +354,10 @@ def test_rerendering_with_fresh_persistent_caches_makes_no_generation_calls(stor
                            locations=locations, master_plate_cache=PersistentMasterPlateCache(store, project.project_id))
 
     first = render()
-    assert calls["generate"] == 4  # Master plate + background + reference + pose
+    assert calls["generate"] == 5  # Master plate + medium background + its details + reference + pose
 
     second = render()
-    assert calls["generate"] == 4  # Unchanged: everything came from DynamoDB + S3
+    assert calls["generate"] == 5  # Unchanged: everything came from DynamoDB + S3
     assert second.image == first.image
 
 def test_list_projects_returns_every_project_newest_first(store):

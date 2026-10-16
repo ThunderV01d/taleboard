@@ -221,6 +221,23 @@ class CharacterOut(BaseModel):
     appearance_reference: str | None
     appearance_reference_url: str | None
 
+class LocationOut(BaseModel):
+    """
+    One location, as clients see it.
+
+    Attributes:
+        location_id: str - Unique location ID (what each shot's location_id refers to).
+        name: str - Short name of the place.
+        description: str - Visual description of the place.
+        master_plate: str - S3 key of the location's master plate, once generated.
+        master_plate_url: str - Temporary download URL for the location's master plate, once generated.
+    """
+    location_id: str
+    name: str
+    description: str
+    master_plate: str | None
+    master_plate_url: str | None
+
 def _project_or_404(store: ProjectStore, project_id: str) -> Project:
     """
     Gets a project's metadata, or responds 404.
@@ -409,6 +426,28 @@ def list_characters(project_id: str, store: ProjectStore = Depends(get_store)) -
             appearance_reference_url=store.presigned_url(character.appearance_reference, IMAGE_URL_EXPIRY_S) if character.appearance_reference else None,
         )
         for character_id, character in store.list_characters(project_id).items()
+    ]
+
+@app.get("/projects/{project_id}/locations", response_model=list[LocationOut])
+def list_locations(project_id: str, store: ProjectStore = Depends(get_store)) -> list[LocationOut]:
+    """
+    Lists a project's locations, with a download URL for each master plate that has been generated.
+
+    Arguments:
+        project_id: str - Unique project ID.
+        store: ProjectStore - Store to read from.
+
+    Returns:
+        list[LocationOut] - Every location. Empty for a project broken down before locations existed.
+    """
+    _project_or_404(store, project_id)
+    return [
+        LocationOut(
+            location_id=location_id,
+            **location.model_dump(),
+            master_plate_url=store.presigned_url(location.master_plate, IMAGE_URL_EXPIRY_S) if location.master_plate else None,
+        )
+        for location_id, location in store.list_locations(project_id).items()
     ]
 
 # lifespan="off": startup/shutdown hooks don't map onto Lambda's invoke model, and the clients they'd create are already cached per container by get_store/get_queue

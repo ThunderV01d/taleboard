@@ -572,6 +572,18 @@ class ProjectStore:
         """
         return {item["SK"].removeprefix("CHARACTER#"):Character.model_validate(_item_fields(item)) for item in self._query(project_id, "CHARACTER#")}
 
+    def list_locations(self, project_id: str) -> dict[str, Location]:
+        """
+        Lists a project's locations.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            dict[str,Location] - Mapping of location IDs to locations.
+        """
+        return {item["SK"].removeprefix("LOCATION#"): Location.model_validate(_item_fields(item)) for item in self._query(project_id, "LOCATION#")}
+
     def get_shot(self, project_id: str, index: int) -> Shot | None:
         """
         Gets one shot.

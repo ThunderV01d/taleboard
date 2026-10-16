@@ -5,11 +5,11 @@ Covers how character, background and master plate prompts are assembled from the
 """
 import pytest
 
-from taleboard.rendering.prompts import BACKGROUND_NEGATIVE_PROMPT, BACKGROUND_STYLE_PREFIX, CAMERA_ANGLE_PHRASES, COMPOSITION_PHRASES, MASTER_PLATE_FRAMING, MAX_SUBJECT_LENGTH, NEGATIVE_PROMPT, ORIENTATION_PHRASES, STYLE_PREFIX, build_background_prompt, build_character_prompt, build_master_plate_prompt
+from taleboard.rendering.prompts import BACKGROUND_NEGATIVE_PROMPT, BACKGROUND_STYLE_PREFIX, CAMERA_ANGLE_PHRASES, COMPOSITION_PHRASES, DETAIL_EDIT_PHRASE, MASTER_PLATE_FRAMING, MAX_SUBJECT_LENGTH, NEGATIVE_PROMPT, ORIENTATION_PHRASES, STYLE_PREFIX, build_background_prompt, build_character_prompt, build_detail_prompt, build_master_plate_prompt
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Location, Region
 
-GENERATED_FRAMINGS = [(shot_size, angle) for shot_size in (ShotSize.WIDE, ShotSize.MEDIUM) for angle in CameraAngle]
+GENERATED_FRAMINGS = [(shot_size, angle) for shot_size in (ShotSize.WIDE, ShotSize.MEDIUM) for angle in CameraAngle if (shot_size, angle) != (ShotSize.WIDE, CameraAngle.EYE_LEVEL)]
 
 
 def _character(description: str = "A tall man in his 30's with a beard, wearing a jacket.") -> Character:
@@ -190,11 +190,12 @@ def test_different_camera_angles_produce_different_character_prompts():
     assert low.text != eye_level.text
 
 
-def test_background_prompt_starts_with_background_style_prefix():
+def test_background_prompts_start_with_background_style_prefix():
     """
-    Verifies that the background and master plate prompts start with the background style prefix.
+    Verifies that the background, detail and master plate prompts start with the background style prefix.
     """
-    assert build_background_prompt(_location(), "", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL).text.startswith(BACKGROUND_STYLE_PREFIX)
+    assert build_background_prompt(_location(), ShotSize.MEDIUM, CameraAngle.EYE_LEVEL).text.startswith(BACKGROUND_STYLE_PREFIX)
+    assert build_detail_prompt(_location(), "the bulb is switched off").text.startswith(BACKGROUND_STYLE_PREFIX)
     assert build_master_plate_prompt(_location()).text.startswith(BACKGROUND_STYLE_PREFIX)
 
 
@@ -205,29 +206,30 @@ def test_background_style_prefix_does_not_force_an_establishing_shot():
     assert "establishing" not in BACKGROUND_STYLE_PREFIX
 
 
-def test_background_prompt_includes_the_location_description_and_the_details():
+def test_a_reframing_prompt_describes_the_location_and_never_any_details():
     """
-    Verifies that the background prompt includes the location's description and the shot's details, as a change.
+    Verifies that a re-framing prompt is the composition plus the location's description, with no change asked for -- details are only ever added by a separate edit.
     """
-    prompt = build_background_prompt(_location(), "the bulb is switched off", ShotSize.WIDE, CameraAngle.LOW)
-    assert "an empty hallway with a single overhead bulb" in prompt.text
-    assert "changed only as follows: the bulb is switched off" in prompt.text
-
-
-def test_background_prompt_without_details_asks_for_no_change():
-    """
-    Verifies that a shot with no details doesn't add an (empty) change to the prompt.
-    """
-    prompt = build_background_prompt(_location(), "", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL)
+    prompt = build_background_prompt(_location(), ShotSize.MEDIUM, CameraAngle.LOW)
+    assert prompt.text.endswith(COMPOSITION_PHRASES[(ShotSize.MEDIUM, CameraAngle.LOW)] + "an empty hallway with a single overhead bulb")
     assert "changed only as follows" not in prompt.text
-    assert prompt.text.endswith("an empty hallway with a single overhead bulb")
+
+
+def test_a_detail_prompt_keeps_the_framing_and_adds_only_the_details():
+    """
+    Verifies that a detail prompt asks for image 1's exact view, with the details as the only change.
+    """
+    prompt = build_detail_prompt(_location(), "the bulb is switched off")
+    assert DETAIL_EDIT_PHRASE in prompt.text and "image 1" in DETAIL_EDIT_PHRASE
+    assert prompt.text.endswith("an empty hallway with a single overhead bulb, changed only as follows: the bulb is switched off")
 
 
 def test_background_prompts_use_their_own_negative_prompt():
     """
-    Verifies that background and master plate prompts carry the background negative prompt, not the character one.
+    Verifies that background, detail and master plate prompts carry the background negative prompt, not the character one.
     """
-    assert build_background_prompt(_location(), "", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL).negative_text == BACKGROUND_NEGATIVE_PROMPT
+    assert build_background_prompt(_location(), ShotSize.MEDIUM, CameraAngle.EYE_LEVEL).negative_text == BACKGROUND_NEGATIVE_PROMPT
+    assert build_detail_prompt(_location(), "rain").negative_text == BACKGROUND_NEGATIVE_PROMPT
     assert build_master_plate_prompt(_location()).negative_text == BACKGROUND_NEGATIVE_PROMPT
 
 
@@ -243,11 +245,11 @@ def test_background_negative_prompt_does_not_exclude_close_up_or_people():
 
 def test_every_generated_framing_has_its_own_composition_phrase_relative_to_the_master_plate():
     """
-    Verifies that every wide and medium framing has a distinct composition phrase that appears in the prompt, and that each one refers to the master plate (image 1).
+    Verifies that every generated framing (wide and medium, except wide eye-level, which is the master plate) has a distinct composition phrase that appears in the prompt, and that each one refers to the master plate (image 1).
     """
     phrases = set()
     for shot_size, angle in GENERATED_FRAMINGS:
-        prompt = build_background_prompt(_location(), "", shot_size, angle)
+        prompt = build_background_prompt(_location(), shot_size, angle)
         assert COMPOSITION_PHRASES[(shot_size, angle)] in prompt.text
         assert "image 1" in COMPOSITION_PHRASES[(shot_size, angle)]
         phrases.add(COMPOSITION_PHRASES[(shot_size, angle)])
@@ -263,12 +265,13 @@ def test_low_and_high_angle_backgrounds_say_where_the_camera_points():
         assert "down" in COMPOSITION_PHRASES[(shot_size, CameraAngle.HIGH)]
 
 
-def test_a_close_up_background_is_never_generated():
+def test_close_ups_and_the_master_plates_own_framing_are_never_generated():
     """
-    Verifies that there is no close-up background prompt -- a close-up is cropped from a wide shot instead.
+    Verifies that there is no close-up background prompt (a close-up is cropped from a wide shot instead), nor a wide eye-level one (that is the master plate).
     """
-    with pytest.raises(KeyError):
-        build_background_prompt(_location(), "", ShotSize.CLOSE_UP, CameraAngle.EYE_LEVEL)
+    for shot_size in (ShotSize.CLOSE_UP, ShotSize.WIDE):
+        with pytest.raises(KeyError):
+            build_background_prompt(_location(), shot_size, CameraAngle.EYE_LEVEL)
 
 
 def test_master_plate_prompt_is_a_wide_view_of_the_location_with_no_reference():
@@ -287,5 +290,5 @@ def test_background_prompt_does_not_share_the_character_style_prefix():
 
     A character cutout wants an isolated subject on a simple white background; a background render wants the opposite.
     """
-    prompt = build_background_prompt(_location(), "", ShotSize.MEDIUM, CameraAngle.EYE_LEVEL)
+    prompt = build_background_prompt(_location(), ShotSize.MEDIUM, CameraAngle.EYE_LEVEL)
     assert STYLE_PREFIX not in prompt.text

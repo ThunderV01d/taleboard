@@ -12,7 +12,7 @@ from PIL import Image
 
 from taleboard.rendering import compositor
 from taleboard.rendering.prompts import CAMERA_ANGLE_PHRASES, STYLE_PREFIX
-from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, CutoutRejectedError, MasterPlateCache, ReferenceImageCache, _background_cache_key, _opaque_fraction, _to_monochrome, render_background, render_characters, render_shot
+from taleboard.rendering.shot_renderer import BackgroundCache, CutoutCache, CutoutRejectedError, MasterPlateCache, ReferenceImageCache, _background_cache_key, _opaque_fraction, _partial_fraction, _to_monochrome, render_background, render_characters, render_shot
 from taleboard.schema.enums import CameraAngle, Orientation, PositionCell, ShotSize, SizeInFrame
 from taleboard.schema.models import Character, Location, Region, Shot
 
@@ -857,7 +857,39 @@ def test_background_cache_key_matches_the_stored_cache_entry():
 
     key = _background_cache_key("hallway", "the bulb is off", ShotSize.MEDIUM, CameraAngle.LOW)
     assert key == ("hallway", "the bulb is off", "medium", "low")
-    assert list(cache) == [key]  # Details are stripped first, so stray whitespace can't cost another generation
+    assert set(cache) == {key, ("hallway", "", "medium", "low")}  # Details are stripped first, so stray whitespace can't cost another generation
+
+
+def test_details_are_an_edit_of_the_same_framing_without_them():
+    """
+    Verifies that a shot's details are drawn as an edit of its framing without details -- never as a re-framing from the master plate in the same generation.
+
+    The first time, that framing has to be drawn first (master plate, framing, then the edit); after that, each new set of details costs one edit.
+    """
+    generate_image, calls = _make_background_fakes()
+    cache: BackgroundCache = {}
+
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, details="the bulb is switched off", cache=cache, generate_image=generate_image)
+    assert calls["generate"] == 3
+    assert calls["references"][2] == [cache[("hallway", "", "medium", "low")]]
+    assert "changed only as follows: the bulb is switched off" in calls["prompts"][2]
+    assert "changed only as follows" not in calls["prompts"][1]  # The re-framing itself never carries details
+
+    _render_background(ShotSize.MEDIUM, CameraAngle.LOW, details="rain on the window", cache=cache, generate_image=generate_image)
+    assert calls["generate"] == 4
+
+
+def test_details_on_a_wide_eye_level_shot_are_an_edit_of_the_master_plate():
+    """
+    Verifies that details on a wide, eye-level shot (or a close-up, which shares its background) are drawn straight from the master plate.
+    """
+    generate_image, calls = _make_background_fakes()
+    master_plate_cache: MasterPlateCache = {}
+
+    _render_background(ShotSize.CLOSE_UP, details="the bulb is switched off", master_plate_cache=master_plate_cache, generate_image=generate_image)
+
+    assert calls["generate"] == 2
+    assert calls["references"][1] == [master_plate_cache["hallway"]]
 
 
 def test_render_shot_rejects_a_shot_with_no_known_location():
@@ -1384,3 +1416,58 @@ def test_render_shot_with_every_character_rendered_needs_no_review():
 
     assert result.rejected_character_ids == ()
     assert result.needs_review is False
+
+
+def _cutout_with_alpha(alpha: int) -> bytes:
+    """
+    Builds a cutout whose figure fills the image at one opacity.
+
+    Arguments:
+        alpha: int - Opacity (0-255) of every pixel.
+
+    Returns:
+        bytes - Cutout image file (PNG, in bytes).
+    """
+    buffer = io.BytesIO()
+    Image.new("RGBA", (10, 10), (255, 0, 0, alpha)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_partial_fraction_measures_how_see_through_a_figure_is():
+    """
+    Verifies that a solid figure has no partly opaque pixels, a see-through one is all partly opaque, and faint edge noise doesn't count either way.
+    """
+    assert _partial_fraction(_cutout_with_alpha(255)) == 0.0
+    assert _partial_fraction(_cutout_with_alpha(140)) == 1.0
+    assert _partial_fraction(_cutout_with_alpha(8)) == 0.0  # Too faint to be part of the figure
+    assert _partial_fraction(_solid_color_png((1, 2, 3))) == 0.0  # No alpha channel: solid
+
+
+def test_a_see_through_cutout_is_regenerated_and_never_cached():
+    """
+    Verifies that a see-through cutout is regenerated, the same way as an empty one, and only the solid attempt is kept.
+    """
+    generate_image, _, calls = _make_fakes()
+    results = iter([_fake_cutout_bytes(),       # Reference: fine
+                    _cutout_with_alpha(140),    # Pose, attempt 1: see-through
+                    _fake_cutout_bytes()])      # Pose, attempt 2: fine
+
+    cache: CutoutCache = {}
+    render_characters(regions=[_region()], characters=_character(), cache=cache, reference_cache={},
+                      generate_image=generate_image, remove_background=lambda raw: next(results))
+
+    assert calls["generate"] == 3
+    assert all(_partial_fraction(c) == 0.0 for c in cache.values())
+
+
+def test_a_persistently_see_through_cutout_leaves_the_character_out():
+    """
+    Verifies that a character whose cutout stays see-through after every attempt is left out and reported, like an empty one.
+    """
+    generate_image, _, _ = _make_fakes()
+    rejected: list[str] = []
+
+    render_characters(regions=[_region()], characters=_character(), cache={}, reference_cache={},
+                      generate_image=generate_image, remove_background=lambda raw: _cutout_with_alpha(140), rejected=rejected)
+
+    assert rejected == ["alice"]

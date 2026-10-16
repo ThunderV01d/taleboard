@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from taleboard.api.app import app, get_api_key, get_queue, get_store
 from taleboard.schema.enums import CameraAngle, ProjectStatus, ShotSize
-from taleboard.schema.models import Character, Shot
+from taleboard.schema.models import Character, Location, Shot
 
 TEST_API_KEY = "test-api-key"
 
@@ -184,6 +184,25 @@ def test_characters_are_listed_with_their_reference_image_url(client, store):
     assert characters["alice"]["aliases"] == ["Al"]
     assert characters["alice"]["appearance_reference_url"].startswith("https://")
     assert characters["bob"]["appearance_reference"] is None and characters["bob"]["appearance_reference_url"] is None
+
+def test_locations_are_listed_with_their_master_plate_url(client, store):
+    """
+    Verifies that the locations are listed, with a download URL only for locations whose master plate exists, and a 404 for an unknown project.
+
+    Arguments:
+        client: TestClient - Client for the API.
+        store: ProjectStore - Fake-backed store, used to play the worker's part.
+    """
+    pid = _create(client)
+    store.save_locations(pid, {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room"), "quay": Location(name="Quay", description="a stone quay")})
+    store.put_master_plate(pid, "lighthouse", b"png")
+
+    locations = {loc["location_id"]: loc for loc in client.get(f"/projects/{pid}/locations").json()}
+
+    assert locations["lighthouse"]["name"] == "Lighthouse"
+    assert locations["lighthouse"]["master_plate_url"].startswith("https://")
+    assert locations["quay"]["master_plate"] is None and locations["quay"]["master_plate_url"] is None
+    assert client.get("/projects/nope/locations").status_code == 404
 
 def test_requests_without_a_valid_api_key_are_rejected_with_401(client):
     """

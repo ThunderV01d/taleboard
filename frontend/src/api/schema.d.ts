@@ -198,6 +198,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Locations
+         * @description Lists a project's locations, with a download URL for each master plate that has been generated.
+         *
+         *     Arguments:
+         *         project_id: str - Unique project ID.
+         *         store: ProjectStore - Store to read from.
+         *
+         *     Returns:
+         *         list[LocationOut] - Every location. Empty for a project broken down before locations existed.
+         */
+        get: operations["list_locations_projects__project_id__locations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -252,6 +279,29 @@ export interface components {
             job_id: string;
             /** Status Url */
             status_url: string;
+        };
+        /**
+         * LocationOut
+         * @description One location, as clients see it.
+         *
+         *     Attributes:
+         *         location_id: str - Unique location ID (what each shot's location_id refers to).
+         *         name: str - Short name of the place.
+         *         description: str - Visual description of the place.
+         *         master_plate: str - S3 key of the location's master plate, once generated.
+         *         master_plate_url: str - Temporary download URL for the location's master plate, once generated.
+         */
+        LocationOut: {
+            /** Location Id */
+            location_id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Master Plate */
+            master_plate: string | null;
+            /** Master Plate Url */
+            master_plate_url: string | null;
         };
         /**
          * Orientation
@@ -680,6 +730,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CharacterOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_locations_projects__project_id__locations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"][];
                 };
             };
             /** @description Validation Error */

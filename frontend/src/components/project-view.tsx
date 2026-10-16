@@ -1,8 +1,10 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
-import { useRef } from "react"
+import { useRef, useState } from "react"
+import { GalleryView } from "@/components/gallery-view"
 
 import { ShotGrid, Storyboard } from "@/components/storyboard"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -13,11 +15,12 @@ import {
   type JobStatus,
   type Shot,
 } from "@/lib/api"
+import { useGallery } from "@/lib/gallery"
 
 const POLL_INTERVAL_MS = 4000
 
 /**
- * A project's render job: live progress while it runs, then the finished storyboard.
+ * A project's render job: live progress while it runs, then the finished storyboard -- with its cast and locations a click away.
  */
 export function ProjectView({ projectId }: { projectId: string }) {
   const project = useQuery({
@@ -37,6 +40,8 @@ export function ProjectView({ projectId }: { projectId: string }) {
     enabled: status.data !== undefined,
     placeholderData: keepPreviousData,
   })
+  const gallery = useGallery(projectId, status.data)
+  const [view, setView] = useState<"storyboard" | "gallery">("storyboard")
 
   // Image URLs are presigned and expire -- a broken image means a stale URL, so refetch once per URL for fresh ones
   const refreshedUrls = useRef(new Set<string>())
@@ -85,8 +90,32 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <AlertDescription>{job.error ?? "Unknown error"}</AlertDescription>
         </Alert>
       )}
-      {job.status === "complete" ? (
-        <Storyboard shots={shotList} onImageError={onImageError} />
+      {job.total_shots !== null && (
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant={view === "storyboard" ? "default" : "outline"}
+            onClick={() => setView("storyboard")}
+          >
+            Storyboard
+          </Button>
+          <Button
+            size="sm"
+            variant={view === "gallery" ? "default" : "outline"}
+            onClick={() => setView("gallery")}
+          >
+            Cast & locations
+          </Button>
+        </div>
+      )}
+      {view === "gallery" && job.total_shots !== null ? (
+        <GalleryView gallery={gallery} />
+      ) : job.status === "complete" ? (
+        <Storyboard
+          shots={shotList}
+          gallery={gallery}
+          onImageError={onImageError}
+        />
       ) : (
         <ShotGrid shots={shotList} onImageError={onImageError} />
       )}

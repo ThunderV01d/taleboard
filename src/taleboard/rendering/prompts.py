@@ -13,6 +13,7 @@ Attributes:
     BACKGROUND_NEGATIVE_PROMPT: str - Negative prompt instructions for the model to avoid generating certain things (in the background).
     MASTER_PLATE_FRAMING: str - Framing of a location's master plate -- a wide, eye-level view of the whole place, which every other background of it is drawn from.
     COMPOSITION_PHRASES: dict[tuple[ShotSize,CameraAngle],str] - Mapping between (shot size, camera angle) and where the camera is relative to the master plate, used in the prompt.
+    DETAIL_EDIT_PHRASE: str - Tells the model to keep image 1's view exactly, so a shot's details are drawn as an edit rather than a new picture.
 """
 from dataclasses import dataclass
 
@@ -96,12 +97,11 @@ BACKGROUND_NEGATIVE_PROMPT = ""
 
 MASTER_PLATE_FRAMING = "wide shot, establishing view of the whole place at eye level, empty, with nobody in it, "
 
-# Every background except the master plate is drawn with the master plate as image 1. Without saying exactly where the camera has moved to,
+# Every other framing of a location is drawn with its master plate as image 1. Without saying exactly where the camera has moved to,
 # FLUX treats the reference as an image to edit and keeps its framing -- so each phrase says where the camera is and what is in and out of frame.
-# Close-ups have no entry: they are cropped from a finished wide shot instead (see shot_renderer), which keeps the room exactly the same.
+# Wide eye-level has no entry, as it is the master plate itself; nor do close-ups, which are cropped from a finished wide shot (see shot_renderer).
 _SAME_PLACE = "keeping everything in the place, its layout and the drawing style the same as image 1, "
 COMPOSITION_PHRASES: dict[tuple[ShotSize, CameraAngle], str] = {
-    (ShotSize.WIDE, CameraAngle.EYE_LEVEL): "the same view of the place in image 1, from the same camera position and with the same framing, ",
     (ShotSize.WIDE, CameraAngle.LOW): (
         "a new view of the place in image 1, with the camera close to the ground looking steeply upward: the sky or ceiling and the tops "
         "of the nearest structures fill the upper half of the frame, and very little of the ground or floor is visible, " + _SAME_PLACE
@@ -139,27 +139,39 @@ def build_master_plate_prompt(location: Location) -> RenderPrompt:
         negative_text=BACKGROUND_NEGATIVE_PROMPT,
     )
 
-def build_background_prompt(location: Location, details: str, shot_size: ShotSize, angle: CameraAngle) -> RenderPrompt:
+DETAIL_EDIT_PHRASE = "the same view of the place in image 1, from the same camera position and with the same framing, "
+
+def build_background_prompt(location: Location, shot_size: ShotSize, angle: CameraAngle) -> RenderPrompt:
     """
-    Builds the FLUX prompt for generating a shot's background/environment, to be drawn with the location's master plate as image 1.
+    Builds the FLUX prompt for re-framing a location -- drawing it at a shot size and angle other than the master plate's, with the master plate as image 1.
 
-    Incorporates where the camera is relative to the master plate (from the shot size and angle), the location's description, and the shot's details (what looks different in this shot).
-
-    Raises a KeyError for a close-up, which is never generated (see COMPOSITION_PHRASES).
+    Raises a KeyError for a wide, eye-level shot (that is the master plate itself) and for a close-up (never generated -- see COMPOSITION_PHRASES).
 
     Arguments:
         location: Location - Location the shot takes place in.
-        details: str - Small, visible changes to the location in this shot. "" if it looks as described.
         shot_size: ShotSize - Size of the shot being composited (WIDE or MEDIUM).
         angle: CameraAngle - Camera angle to be used in the generation.
 
     Returns:
         RenderPrompt - A RenderPrompt object, representing the background prompt to be handed off to the model.
     """
-    composition_phrase = COMPOSITION_PHRASES[(shot_size, angle)]
-    details_phrase = f", changed only as follows: {details}" if details else ""
-
     return RenderPrompt(
-        text=BACKGROUND_STYLE_PREFIX + composition_phrase + location.description + details_phrase,
+        text=BACKGROUND_STYLE_PREFIX + COMPOSITION_PHRASES[(shot_size, angle)] + location.description,
+        negative_text=BACKGROUND_NEGATIVE_PROMPT,
+    )
+
+def build_detail_prompt(location: Location, details: str) -> RenderPrompt:
+    """
+    Builds the FLUX prompt for drawing a shot's details as an edit of the same framing without them (given as image 1) -- the camera never moves in the same generation.
+
+    Arguments:
+        location: Location - Location the shot takes place in.
+        details: str - Small, visible changes to the location in this shot.
+
+    Returns:
+        RenderPrompt - A RenderPrompt object, representing the detail edit prompt to be handed off to the model.
+    """
+    return RenderPrompt(
+        text=BACKGROUND_STYLE_PREFIX + DETAIL_EDIT_PHRASE + location.description + f", changed only as follows: {details}",
         negative_text=BACKGROUND_NEGATIVE_PROMPT,
     )

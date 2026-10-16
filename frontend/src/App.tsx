@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { configError } from "@/lib/api"
 import { useProjectId } from "@/lib/navigation"
+import { ProjectList } from "@/components/project-list"
 
 export function App() {
   const [projectId, openProject] = useProjectId()
@@ -38,7 +39,10 @@ export function App() {
         ) : projectId ? (
           <ProjectView key={projectId} projectId={projectId} />
         ) : (
-          <StoryForm onStarted={openProject} />
+          <div className="space-y-12">
+            <StoryForm onStarted={openProject} />
+            <ProjectList onOpen={openProject} />
+          </div>
         )}
       </main>
     </div>

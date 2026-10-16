@@ -2,11 +2,10 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Shot } from "@/lib/api"
-import { ANGLE_LABELS, SHOT_SIZE_LABELS } from "@/lib/labels"
 
 /**
- * One shot: its image once rendered (a placeholder until then), number, description and framing.
- */
+ * One shot: its image once rendered (a placeholder until then), number and description. Its framing and the rest are in the storyboard's shot panel.
+*/
 export function ShotCard({
   shot,
   number,
@@ -52,21 +51,7 @@ export function ShotCard({
           )}
         </div>
         <p className="line-clamp-2 text-muted-foreground">{shot.description}</p>
-        <ShotMeta shot={shot} />
       </CardContent>
     </Card>
-  )
-}
-
-/**
- * A shot's framing and duration, as small badges.
- */
-export function ShotMeta({ shot }: { shot: Shot }) {
-  return (
-    <div className="flex flex-wrap gap-1">
-      <Badge variant="secondary">{SHOT_SIZE_LABELS[shot.shot_size]}</Badge>
-      <Badge variant="secondary">{ANGLE_LABELS[shot.angle]}</Badge>
-      <Badge variant="outline">{shot.duration_s}s</Badge>
-    </div>
   )
 }

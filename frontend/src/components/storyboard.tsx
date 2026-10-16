@@ -1,6 +1,7 @@
 import { useState } from "react"
 
-import { ShotCard, ShotMeta } from "@/components/shot-card"
+import { ShotCard } from "@/components/shot-card"
+import { ShotDetails } from "@/components/shot-details"
 import { Badge } from "@/components/ui/badge"
 import {
   Carousel,
@@ -11,26 +12,29 @@ import {
   type CarouselApi,
 } from "@/components/ui/carousel"
 import type { Shot } from "@/lib/api"
+import type { Gallery } from "@/lib/gallery"
 
 /**
- * The finished storyboard: a slideshow of every shot, with a clickable grid below it.
+ * The finished storyboard: a slideshow of every shot, each beside a panel of its details, with a clickable grid below it.
  */
 export function Storyboard({
   shots,
+  gallery,
   onImageError,
 }: {
   shots: Shot[]
+  gallery: Gallery
   onImageError: (shot: Shot) => void
 }) {
   const [carousel, setCarousel] = useState<CarouselApi>()
 
   return (
     <div className="flex flex-col gap-10">
-      <Carousel setApi={setCarousel} className="mx-auto w-full max-w-2xl">
+      <Carousel setApi={setCarousel} className="mx-auto w-full max-w-4xl">
         <CarouselContent>
           {shots.map((shot, index) => (
             <CarouselItem key={shot.shot_id}>
-              <figure className="flex flex-col gap-3">
+              <figure className="grid gap-6 md:grid-cols-[minmax(0,1fr)_16rem]">
                 {shot.image_url && (
                   <img
                     src={shot.image_url}
@@ -39,15 +43,17 @@ export function Storyboard({
                     onError={() => onImageError(shot)}
                   />
                 )}
-                <figcaption className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2 font-medium">
-                    Shot {index + 1} of {shots.length}
-                    {shot.needs_review && (
-                      <Badge variant="destructive">Needs review</Badge>
-                    )}
+                <figcaption className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2 font-medium">
+                      Shot {index + 1} of {shots.length}
+                      {shot.needs_review && (
+                        <Badge variant="destructive">Needs review</Badge>
+                      )}
+                    </div>
+                    <p className="text-muted-foreground">{shot.description}</p>
                   </div>
-                  <p className="text-muted-foreground">{shot.description}</p>
-                  <ShotMeta shot={shot} />
+                  <ShotDetails shot={shot} gallery={gallery} />
                 </figcaption>
               </figure>
             </CarouselItem>
