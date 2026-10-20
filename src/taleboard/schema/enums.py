@@ -55,6 +55,36 @@ class CameraAngle(str,Enum):
     LOW = "low"
     HIGH = "high"
 
+class Facing(str,Enum):
+    """
+    Direction the camera faces within a location, as a compass point. Each facing is its own background plate of that location.
+    """
+    # Set per shot (by the breakdown or the user) and independent of each character's orientation
+    NORTH = "north"
+    EAST = "east"
+    SOUTH = "south"
+    WEST = "west"
+
+class TimeOfDay(str,Enum):
+    """
+    Time of day a scene takes place at. Lights the scene's backgrounds together with its atmosphere.
+    """
+    DAWN = "dawn"
+    DAY = "day"
+    DUSK = "dusk"
+    NIGHT = "night"
+
+class Atmosphere(str,Enum):
+    """
+    Weather and atmosphere of a scene. Lights the scene's backgrounds together with its time of day.
+    """
+    CLEAR = "clear"
+    OVERCAST = "overcast"
+    RAINY = "rainy"
+    FOGGY = "foggy"
+    STORMY = "stormy"
+    SNOWY = "snowy"
+
 class ProjectStatus(str,Enum):
     """
     Lifecycle of a project's render job.

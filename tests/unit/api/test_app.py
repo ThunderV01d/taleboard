@@ -1,9 +1,10 @@
 """
 Unit tests for the HTTP API.
 
-Uses FastAPI's test client against moto's fakes of DynamoDB, S3 and SQS (see tests/unit/conftest.py), so no AWS calls are made and nothing is rendered.
+Uses FastAPI's test client against moto's fakes of DynamoDB and S3 (see tests/unit/conftest.py, and tests/unit/api/conftest.py for the client), so no AWS calls are made.
+
+Covers the shared API key check, and the project routes.
 """
-import json
 import subprocess
 import sys
 
@@ -11,215 +12,120 @@ import boto3
 import pytest
 from fastapi.testclient import TestClient
 
-from taleboard.api.app import app, get_api_key, get_queue, get_store
-from taleboard.schema.enums import CameraAngle, ProjectStatus, ShotSize
-from taleboard.schema.models import Character, Location, Shot
+from taleboard.api.app import app, get_api_key
 
-TEST_API_KEY = "test-api-key"
-
-@pytest.fixture
-def client(store, queue):
-    """
-    A test client whose store, queue and expected API key are fakes, and which sends that key on every request.
-
-    Arguments:
-        store: ProjectStore - Fake-backed store.
-        queue: JobQueue - Fake-backed queue.
-
-    Returns:
-        TestClient - Client for the API.
-    """
-    app.dependency_overrides[get_store] = lambda: store
-    app.dependency_overrides[get_queue] = lambda: queue
-    app.dependency_overrides[get_api_key] = lambda: TEST_API_KEY
-    yield TestClient(app, headers={"X-API-Key": TEST_API_KEY})
-    app.dependency_overrides.clear()
-
-
-def _shot(index: int) -> Shot:
-    """
-    Builds a character-less shot.
-
-    Arguments:
-        index: int - Used in the description and details, and as the paragraph index.
-
-    Returns:
-        Shot - A Shot object.
-    """
-    return Shot(description=f"shot {index}", location_id="lighthouse", details=f"details {index}", regions=[], paragraph_index=index,
-                shot_size=ShotSize.MEDIUM, angle=CameraAngle.EYE_LEVEL, duration_s=2.0)
-
-
-def _create(client) -> str:
+def _create(client, name: str = "Lighthouse") -> str:
     """
     Creates a project through the API.
 
     Arguments:
         client: TestClient - Client for the API.
+        name: str - Name of the project. Defaults to "Lighthouse".
 
     Returns:
         str - The new project's ID.
     """
-    return client.post("/projects", json={"name": "Lighthouse"}).json()["project_id"]
-
-
-def test_projects_can_be_created_read_and_listed(client):
-    """
-    Verifies the project endpoints: create returns 201, and the project can then be read and listed.
-
-    Arguments:
-        client: TestClient - Client for the API.
-    """
-    response = client.post("/projects", json={"name": "Lighthouse"})
+    response = client.post("/projects", json={"name": name})
     assert response.status_code == 201
-    project = response.json()
-    assert project["status"] == "created"
-
-    assert client.get(f"/projects/{project['project_id']}").json()["name"] == "Lighthouse"
-    assert [p["project_id"] for p in client.get("/projects").json()] == [project["project_id"]]
+    return response.json()["project_id"]
 
 
-def test_an_unknown_project_is_a_404_everywhere(client):
+def test_a_project_is_created_read_and_listed(client):
     """
-    Verifies that every project endpoint responds 404 for a project that doesn't exist.
+    Verifies that a created project comes back with its ID, name and creation time, and can be read and listed.
+    """
+    created = client.post("/projects", json={"name": "Lighthouse"})
+
+    assert created.status_code == 201
+    project = created.json()
+    assert set(project) == {"project_id", "name", "created_at"}
+    assert client.get(f"/projects/{project['project_id']}").json() == project
+    assert project in client.get("/projects").json()
+
+
+def test_projects_are_listed_newest_first(client):
+    """
+    Verifies that the project list is newest first.
+    """
+    for name in ("First", "Second", "Third"):
+        _create(client, name)
+
+    listed = client.get("/projects").json()
+
+    assert [p["created_at"] for p in listed] == sorted((p["created_at"] for p in listed), reverse=True)
+
+
+@pytest.mark.parametrize("body", [{"name": ""}, {"name": "x" * 201}, {}, {"title": "Lighthouse"}])
+def test_a_project_needs_a_name_of_1_to_200_characters(client, body):
+    """
+    Verifies that an empty, over-long or missing name is refused with a 422, before anything is created.
 
     Arguments:
-        client: TestClient - Client for the API.
+        body: dict - An invalid request body.
     """
-    for path in ("", "/status", "/shots", "/shots/0", "/characters"):
-        assert client.get(f"/projects/nope{path}").status_code == 404
-    assert client.post("/projects/nope/story", json={"story": "Alice waved."}).status_code == 404
+    assert client.post("/projects", json=body).status_code == 422
+    assert client.get("/projects").json() == []
 
 
-def test_submitting_a_story_queues_a_job_and_returns_202(client, queue):
+def test_a_project_can_be_renamed(client):
     """
-    Verifies that a story is accepted immediately -- 202, with the job queued and the project pending.
-
-    Arguments:
-        client: TestClient - Client for the API.
-        queue: JobQueue - Fake-backed queue.
+    Verifies that PATCH renames a project, keeps its ID and creation time, and refuses an empty name.
     """
     pid = _create(client)
+    before = client.get(f"/projects/{pid}").json()
 
-    response = client.post(f"/projects/{pid}/story", json={"story": "Alice waved."})
+    renamed = client.patch(f"/projects/{pid}", json={"name": "The Lighthouse"})
 
-    assert response.status_code == 202
-    job_id = response.json()["job_id"]
-    message = queue._sqs.receive_message(QueueUrl=queue._queue_url)["Messages"][0]
-    assert json.loads(message["Body"]) == {"project_id": pid, "job_id": job_id}
-    assert client.get(f"/projects/{pid}/status").json()["status"] == "pending"
+    assert renamed.status_code == 200
+    assert renamed.json() == {**before, "name": "The Lighthouse"}
+    assert client.patch(f"/projects/{pid}", json={"name": ""}).status_code == 422
+    assert client.get(f"/projects/{pid}").json()["name"] == "The Lighthouse"
 
 
-def test_a_second_story_is_a_409_and_a_blank_one_a_422(client):
+def test_a_deleted_project_is_gone(client, boards):
     """
-    Verifies that a project with a story turns away another, and that a blank story never gets stored.
-
-    Arguments:
-        client: TestClient - Client for the API.
+    Verifies that DELETE answers 204 with no body, after which the project is gone from reads, the list and S3.
     """
     pid = _create(client)
-    assert client.post(f"/projects/{pid}/story", json={"story": "   \n\n "}).status_code == 422
-    assert client.post(f"/projects/{pid}/story", json={"story": "Alice waved."}).status_code == 202
-    assert client.post(f"/projects/{pid}/story", json={"story": "Bob waved."}).status_code == 409
+    boards._s3.put_object(Bucket=boards._bucket, Key=f"projects/{pid}/uploads/a.png", Body=b"png")
+
+    deleted = client.delete(f"/projects/{pid}")
+
+    assert (deleted.status_code, deleted.content) == (204, b"")
+    assert client.get(f"/projects/{pid}").status_code == 404
+    assert client.get("/projects").json() == []
+    assert "Contents" not in boards._s3.list_objects_v2(Bucket=boards._bucket, Prefix=f"projects/{pid}/")
 
 
-def test_a_failed_enqueue_fails_the_project_so_it_can_be_resubmitted(client, queue, monkeypatch):
+@pytest.mark.parametrize("method, body", [("get", None), ("patch", {"name": "New"}), ("delete", None)])
+def test_an_unknown_project_is_a_404(client, method, body):
     """
-    Verifies that if the job can't be queued, the client gets a 503 and the project is failed rather than stuck at pending.
+    Verifies that every route naming a project answers 404, with a message, when it doesn't exist.
 
     Arguments:
-        client: TestClient - Client for the API.
-        queue: JobQueue - Fake-backed queue.
-        monkeypatch: pytest.MonkeyPatch - Used to make queuing fail.
+        method: str - HTTP method.
+        body: dict - Request body, if the route takes one.
     """
-    pid = _create(client)
-    monkeypatch.setattr(queue, "enqueue", lambda project_id, job_id: (_ for _ in ()).throw(RuntimeError("SQS is down")))
+    response = client.request(method, "/projects/does-not-exist", json=body)
 
-    assert client.post(f"/projects/{pid}/story", json={"story": "Alice waved."}).status_code == 503
-    assert client.get(f"/projects/{pid}/status").json()["status"] == "failed"
+    assert response.status_code == 404
+    assert "does-not-exist" in response.json()["detail"]
 
-
-def test_status_and_shots_show_progress_part_way_through_a_job(client, store):
-    """
-    Verifies progressive completion: part-way through a job, status counts rendered shots, and finished shots are readable with an image URL while the rest aren't rendered yet.
-
-    Arguments:
-        client: TestClient - Client for the API.
-        store: ProjectStore - Fake-backed store, used to play the worker's part.
-    """
-    pid = _create(client)
-    job_id = client.post(f"/projects/{pid}/story", json={"story": "Alice waved."}).json()["job_id"]
-    store.claim_job(pid, job_id)
-    store.save_breakdown(pid, {}, [_shot(0), _shot(1), _shot(2)])
-    store.save_rendered_shot(pid, 0, _shot(0), b"png", needs_review=True)
-
-    assert client.get(f"/projects/{pid}/status").json() == {
-        "status": "in_progress", "total_shots": 3, "rendered_shots": 1, "shots_needing_review": 1, "error": None,
-    }
-    shots = client.get(f"/projects/{pid}/shots").json()
-    assert [(s["shot_id"], s["rendered"]) for s in shots] == [("0000", True), ("0001", False), ("0002", False)]
-    assert shots[0]["image_url"].startswith("https://") and shots[1]["image_url"] is None
-    assert (shots[1]["location_id"], shots[1]["details"]) == ("lighthouse", "details 1") and "setting" not in shots[1]
-
-    assert client.get(f"/projects/{pid}/shots/0").json()["needs_review"] is True
-    assert client.get(f"/projects/{pid}/shots/0002").json()["shot_id"] == "0002"
-    assert client.get(f"/projects/{pid}/shots/3").status_code == 404
-    assert client.get(f"/projects/{pid}/shots/abc").status_code == 404
-
-
-def test_characters_are_listed_with_their_reference_image_url(client, store):
-    """
-    Verifies that the cast is listed, with a download URL only for characters whose reference image exists.
-
-    Arguments:
-        client: TestClient - Client for the API.
-        store: ProjectStore - Fake-backed store, used to play the worker's part.
-    """
-    pid = _create(client)
-    store.save_characters(pid, {"alice": Character(name="Alice", description="A woman.", aliases=["Al"]), "bob": Character(name="Bob", description="A man.")})
-    store.put_reference(pid, "alice", b"png")
-
-    characters = {c["character_id"]: c for c in client.get(f"/projects/{pid}/characters").json()}
-
-    assert characters["alice"]["aliases"] == ["Al"]
-    assert characters["alice"]["appearance_reference_url"].startswith("https://")
-    assert characters["bob"]["appearance_reference"] is None and characters["bob"]["appearance_reference_url"] is None
-
-def test_locations_are_listed_with_their_master_plate_url(client, store):
-    """
-    Verifies that the locations are listed, with a download URL only for locations whose master plate exists, and a 404 for an unknown project.
-
-    Arguments:
-        client: TestClient - Client for the API.
-        store: ProjectStore - Fake-backed store, used to play the worker's part.
-    """
-    pid = _create(client)
-    store.save_locations(pid, {"lighthouse": Location(name="Lighthouse", description="a round stone lamp room"), "quay": Location(name="Quay", description="a stone quay")})
-    store.put_master_plate(pid, "lighthouse", b"png")
-
-    locations = {loc["location_id"]: loc for loc in client.get(f"/projects/{pid}/locations").json()}
-
-    assert locations["lighthouse"]["name"] == "Lighthouse"
-    assert locations["lighthouse"]["master_plate_url"].startswith("https://")
-    assert locations["quay"]["master_plate"] is None and locations["quay"]["master_plate_url"] is None
-    assert client.get("/projects/nope/locations").status_code == 404
 
 def test_requests_without_a_valid_api_key_are_rejected_with_401(client):
     """
-    Verifies that a missing or wrong API key gets a 401 -- on reads as well as on the paid story endpoint.
-
-    Arguments:
-        client: TestClient - Client for the API (sends the right key by default).
+    Verifies that a missing or wrong API key gets a 401, on reads and writes alike.
     """
     no_key = TestClient(app)  # Same overrides, but sends no key
     assert no_key.get("/projects").status_code == 401
-    assert no_key.post("/projects/any-id/story", json={"story": "Once upon a time."}).status_code == 401
+    assert no_key.post("/projects", json={"name": "Lighthouse"}).status_code == 401
 
     wrong_key = client.get("/projects", headers={"X-API-Key": "wrong-key"})
     assert wrong_key.status_code == 401
     assert wrong_key.headers["www-authenticate"] == "APIKey"
 
     assert client.get("/projects").status_code == 200
+    assert client.get("/projects").json() == []  # The unauthorised create never happened
 
 
 def test_the_api_key_is_read_from_parameter_store(aws, monkeypatch):

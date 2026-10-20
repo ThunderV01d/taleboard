@@ -69,6 +69,12 @@ class TaleboardStack(Stack):
             enforce_ssl=True,
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+            cors=[s3.CorsRule(
+                allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.POST],  # POST for browser uploads; GET so the canvas can draw (and export) images
+                allowed_origins=cors_origins,
+                allowed_headers=["*"],
+                max_age=3600,
+            )],
         )
 
         # Job queue -- visibility outlasts the worker's 15-minute timeout, and matches the 16-minute job lease
@@ -150,13 +156,13 @@ class TaleboardStack(Stack):
 
         # HTTP API -- an explicit GET/POST route rather than $default: a catch-all route also catches OPTIONS, which stops
         # API Gateway answering CORS preflights itself 
-        # Add any new method (eg:- the editor's PUT/DELETE) to this list
+        # Every method the API uses must be listed here and in allow_methods
         # Throttled because POST /story spends real money
         http_api = apigw.HttpApi(
             self, "HttpApi",
             cors_preflight=apigw.CorsPreflightOptions(
                 allow_origins=cors_origins,
-                allow_methods=[apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST],
+                allow_methods=[apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.PATCH, apigw.CorsHttpMethod.DELETE],
                 allow_headers=["content-type", "x-api-key"],
                 max_age=Duration.hours(1),
             ),
@@ -164,7 +170,7 @@ class TaleboardStack(Stack):
         )
         http_api.add_routes(
             path="/{proxy+}",
-            methods=[apigw.HttpMethod.GET, apigw.HttpMethod.POST],
+            methods=[apigw.HttpMethod.GET, apigw.HttpMethod.POST, apigw.HttpMethod.PUT, apigw.HttpMethod.PATCH, apigw.HttpMethod.DELETE],
             integration=HttpLambdaIntegration("ApiIntegration", api_fn),
         )
 
