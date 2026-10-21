@@ -186,12 +186,14 @@ def test_a_shot_round_trips_through_plain_data():
     assert Shot.model_validate_json(shot.model_dump_json()) == shot
 
 
-def test_a_project_needs_a_name_and_gets_its_own_id():
+def test_a_project_needs_a_name_and_an_owner_and_gets_its_own_id():
     """
-    Verifies that a project's name can't be empty, and that each new project gets a different ID.
+    Verifies that a project's name can't be empty, that it must have an owner, and that each new project gets a different ID.
     """
     now = datetime.now(timezone.utc)
     with pytest.raises(ValidationError):
-        Project(name="", created_at=now)
+        Project(name="", owner_id="mara", created_at=now)
 
-    assert Project(name="A", created_at=now).project_id != Project(name="B", created_at=now).project_id
+    assert Project(name="A", owner_id="mara", created_at=now).project_id != Project(name="B", owner_id="mara", created_at=now).project_id
+    with pytest.raises(ValidationError):
+        Project(name="A", created_at=now)  # Every project has an owner

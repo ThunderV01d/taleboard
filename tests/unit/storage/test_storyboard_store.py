@@ -11,7 +11,9 @@ from pydantic import ValidationError
 from taleboard.schema.enums import Facing, Orientation, ShotSize, TimeOfDay
 from taleboard.schema.layers import BackgroundLayer, CharacterLayer, GroupLayer, PropLayer, TextLayer, Transform
 from taleboard.schema.storyboard import Character, Location, Prop, Reference, Scene, Shot
-from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStore, registry_sk, scene_sk, shot_sk
+from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStore, owner_index_key, registry_sk, scene_sk, shot_sk
+
+OWNER = "mara-user"
 
 
 @pytest.fixture
@@ -39,7 +41,7 @@ def pid(boards):
     Returns:
         str - The project's ID.
     """
-    return boards.create_project("Lighthouse").project_id
+    return boards.create_project("Lighthouse", OWNER).project_id
 
 
 def _shot(scene_id: str, order: int = 0, **changes) -> Shot:
@@ -73,16 +75,38 @@ def test_sort_keys_follow_the_planned_layout():
     assert registry_sk(Location, "office") == "LOCATION#office"
     assert scene_sk("s1") == "SCENE#s1"
     assert shot_sk("s1", "h1") == "SHOT#s1#h1"
+    assert owner_index_key("u1") == "OWNER#u1"
 
 
 def test_a_project_is_created_found_and_listed(boards):
     """
     Verifies that a new project can be got back by ID, and is listed.
     """
-    project = boards.create_project("Lighthouse")
+    project = boards.create_project("Lighthouse", OWNER)
 
     assert boards.get_project(project.project_id) == project
-    assert project in boards.list_projects()
+    assert project in boards.list_projects(OWNER)
+
+
+def test_a_project_records_its_owner_and_is_only_listed_for_them(boards):
+    """
+    Verifies that a project keeps its owner, and that each user's list holds only their own projects.
+    """
+    mine = boards.create_project("Mine", OWNER)
+    theirs = boards.create_project("Theirs", "someone-else")
+
+    assert boards.get_project(mine.project_id).owner_id == OWNER
+    assert boards.list_projects(OWNER) == [mine]
+    assert boards.list_projects("someone-else") == [theirs]
+    assert boards.list_projects("nobody") == []
+
+
+def test_renaming_keeps_the_owner(boards, pid):
+    """
+    Verifies that a rename changes only the name -- the placeholder owner used to validate it is never written.
+    """
+    assert boards.rename_project(pid, "The Lighthouse").owner_id == OWNER
+    assert boards.get_project(pid).owner_id == OWNER
 
 
 def test_projects_are_listed_newest_first(boards):
@@ -90,9 +114,9 @@ def test_projects_are_listed_newest_first(boards):
     Verifies that the projects index lists projects newest first.
     """
     for name in ("First", "Second", "Third"):
-        boards.create_project(name)
+        boards.create_project(name, OWNER)
 
-    listed = boards.list_projects()
+    listed = boards.list_projects(OWNER)
 
     assert [p.created_at for p in listed] == sorted((p.created_at for p in listed), reverse=True)
 
@@ -209,7 +233,7 @@ def test_registries_are_scoped_to_their_project(boards, pid):
     """
     Verifies that two projects' registries never mix.
     """
-    other = boards.create_project("Other").project_id
+    other = boards.create_project("Other", OWNER).project_id
     boards.create_entry(pid, Character, "Mara")
 
     assert boards.list_entries(other, Character) == []

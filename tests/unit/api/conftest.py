@@ -1,17 +1,17 @@
 """
-Shared fixtures for the API tests -- a fake-backed store, and a test client that uses it and sends a valid API key.
+Shared fixtures for the API tests -- a fake-backed store, and a test client that uses it as a signed-in user.
 
 Attributes:
-    TEST_API_KEY: str - The API key the test client sends, and the app is told to expect.
+    TEST_USER_ID: str - The user the test client is signed in as.
 """
 import pytest
 from fastapi.testclient import TestClient
 
-from taleboard.api.app import app, get_api_key
-from taleboard.api.deps import get_boards
+from taleboard.api.app import app
+from taleboard.api.deps import get_boards, get_user_id
 from taleboard.storage.storyboard_store import StoryboardStore
 
-TEST_API_KEY = "test-api-key"
+TEST_USER_ID = "test-user"
 
 
 @pytest.fixture
@@ -29,9 +29,20 @@ def boards(aws):
 
 
 @pytest.fixture
+def user_id() -> str:
+    """
+    The user the test client is signed in as.
+
+    Returns:
+        str - TEST_USER_ID.
+    """
+    return TEST_USER_ID
+
+
+@pytest.fixture
 def client(boards):
     """
-    A test client whose store and expected API key are fakes, and which sends that key on every request.
+    A test client whose store is the fakes, signed in as TEST_USER_ID -- standing in for API Gateway's JWT authorizer, which doesn't run in tests.
 
     Arguments:
         boards: StoryboardStore - Fake-backed store.
@@ -40,6 +51,6 @@ def client(boards):
         TestClient - Client for the API.
     """
     app.dependency_overrides[get_boards] = lambda: boards
-    app.dependency_overrides[get_api_key] = lambda: TEST_API_KEY
-    yield TestClient(app, headers={"X-API-Key": TEST_API_KEY})
+    app.dependency_overrides[get_user_id] = lambda: TEST_USER_ID
+    yield TestClient(app)
     app.dependency_overrides.clear()

@@ -3,16 +3,17 @@ Unit tests for the HTTP API.
 
 Uses FastAPI's test client against moto's fakes of DynamoDB and S3 (see tests/unit/conftest.py, and tests/unit/api/conftest.py for the client), so no AWS calls are made.
 
-Covers the shared API key check, and the project routes.
+Covers the sign-in check, and the project routes.
 """
 import subprocess
 import sys
 
-import boto3
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
-from taleboard.api.app import app, get_api_key
+from taleboard.api.app import app
+from taleboard.api.deps import get_boards, get_user_id
 
 def _create(client, name: str = "Lighthouse") -> str:
     """
@@ -30,15 +31,16 @@ def _create(client, name: str = "Lighthouse") -> str:
     return response.json()["project_id"]
 
 
-def test_a_project_is_created_read_and_listed(client):
+def test_a_project_is_created_read_and_listed(client, user_id):
     """
-    Verifies that a created project comes back with its ID, name and creation time, and can be read and listed.
+    Verifies that a created project comes back with its ID, name, owner (the signed-in user) and creation time, and can be read and listed.
     """
     created = client.post("/projects", json={"name": "Lighthouse"})
 
     assert created.status_code == 201
     project = created.json()
-    assert set(project) == {"project_id", "name", "created_at"}
+    assert set(project) == {"project_id", "name", "owner_id", "created_at"}
+    assert project["owner_id"] == user_id
     assert client.get(f"/projects/{project['project_id']}").json() == project
     assert project in client.get("/projects").json()
 
@@ -112,37 +114,121 @@ def test_an_unknown_project_is_a_404(client, method, body):
     assert "does-not-exist" in response.json()["detail"]
 
 
-def test_requests_without_a_valid_api_key_are_rejected_with_401(client):
+def _as(user_id: str) -> None:
     """
-    Verifies that a missing or wrong API key gets a 401, on reads and writes alike.
-    """
-    no_key = TestClient(app)  # Same overrides, but sends no key
-    assert no_key.get("/projects").status_code == 401
-    assert no_key.post("/projects", json={"name": "Lighthouse"}).status_code == 401
-
-    wrong_key = client.get("/projects", headers={"X-API-Key": "wrong-key"})
-    assert wrong_key.status_code == 401
-    assert wrong_key.headers["www-authenticate"] == "APIKey"
-
-    assert client.get("/projects").status_code == 200
-    assert client.get("/projects").json() == []  # The unauthorised create never happened
-
-
-def test_the_api_key_is_read_from_parameter_store(aws, monkeypatch):
-    """
-    Verifies that the expected API key comes from SSM Parameter Store.
+    Switches the test client to another signed-in user.
 
     Arguments:
-        aws: tuple[ProjectStore,JobQueue] - The shared fakes (provides fake credentials and an active moto mock).
-        monkeypatch: pytest.MonkeyPatch - Used to point the API at the parameter.
+        user_id: str - The user to act as.
     """
-    boto3.client("ssm").put_parameter(Name="/taleboard/api-key", Value="secret-api-key", Type="SecureString")
-    monkeypatch.setenv("TALEBOARD_API_KEY_PARAMETER", "/taleboard/api-key")
-    get_api_key.cache_clear()
+    app.dependency_overrides[get_user_id] = lambda: user_id
+
+
+def test_each_user_only_lists_their_own_projects(client, user_id):
+    """
+    Verifies that the project list is per user.
+    """
+    mine = _create(client, "Mine")
+    _as("someone-else")
+    theirs = _create(client, "Theirs")
+
+    assert [p["project_id"] for p in client.get("/projects").json()] == [theirs]
+    _as(user_id)
+    assert [p["project_id"] for p in client.get("/projects").json()] == [mine]
+
+
+PROJECT_ROUTES = sorted(
+    (method, route.path)
+    for route in app.routes if "{project_id}" in getattr(route, "path", "")
+    for method in route.methods
+)
+
+
+@pytest.mark.parametrize("method, path", PROJECT_ROUTES)
+def test_no_route_lets_one_user_into_another_users_project(client, boards, method, path):
+    """
+    Verifies, for every route under /projects/{project_id} (including any added later), that another user gets the same 404 as for a project that doesn't exist -- and changes nothing.
+
+    Arguments:
+        method: str - HTTP method.
+        path: str - The route's path template.
+    """
+    pid = _create(client)
+    client.post(f"/projects/{pid}/locations", json={"name": "Office"})
+    scene = client.post(f"/projects/{pid}/scenes", json={"location_id": "office"}).json()["id"]
+    shot = client.post(f"/projects/{pid}/scenes/{scene}/shots", json={}).json()["id"]
+    url = path.format(project_id=pid, scene_id=scene, shot_id=shot, entry_id="office")
+    _as("intruder")
+
+    response = client.request(method, url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == f"No project with ID {pid!r}"
+    assert boards.get_project(pid).name == "Lighthouse"
+    assert [s.id for s in boards.list_scenes(pid)] == [scene]
+
+
+def test_requests_without_a_signed_in_user_are_rejected_with_401(boards, user_id):
+    """
+    Verifies that the app fails closed: a request that reaches it without the authorizer's verified claims is refused, on reads and writes alike.
+    """
+    app.dependency_overrides[get_boards] = lambda: boards  # The store, but no stand-in user
     try:
-        assert get_api_key() == "secret-api-key"
+        anonymous = TestClient(app)
+        for response in (anonymous.get("/projects"), anonymous.post("/projects", json={"name": "Lighthouse"})):
+            assert response.status_code == 401
+            assert response.headers["www-authenticate"] == "Bearer"
+        assert boards.list_projects(user_id) == []  # The refused create never happened
     finally:
-        get_api_key.cache_clear()  # Don't leak the cached key into other tests
+        app.dependency_overrides.clear()
+
+
+def _request(event: dict) -> Request:
+    """
+    Builds a request the way Mangum does, with the Lambda event in its scope.
+
+    Arguments:
+        event: dict - The API Gateway event.
+
+    Returns:
+        Request - The request.
+    """
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "aws.event": event})
+
+
+def test_the_user_id_is_the_sub_claim_the_authorizer_verified():
+    """
+    Verifies that get_user_id reads the token's sub from where API Gateway's JWT authorizer puts the verified claims.
+    """
+    event = {"version": "2.0", "requestContext": {"authorizer": {"jwt": {"claims": {"sub": "user-123", "client_id": "web"}, "scopes": None}}}}
+
+    assert get_user_id(_request(event)) == "user-123"
+
+
+@pytest.mark.parametrize("event", [
+    {"version": "2.0", "requestContext": {}},                                  # No authorizer on the route
+    {"version": "2.0", "requestContext": {"authorizer": {"jwt": {"claims": {}}}}},  # Claims without a sub
+    {"version": "2.0", "requestContext": {"authorizer": None}},
+])
+def test_a_request_without_verified_claims_has_no_user(event):
+    """
+    Verifies that get_user_id refuses with a 401 whenever the verified sub is missing, instead of letting the request through.
+
+    Arguments:
+        event: dict - An API Gateway event without a verified sub.
+    """
+    with pytest.raises(HTTPException) as refused:
+        get_user_id(_request(event))
+
+    assert refused.value.status_code == 401
+
+
+def test_a_request_that_bypassed_lambda_has_no_user():
+    """
+    Verifies that a request with no Lambda event at all (eg:- the app run directly) is refused, not treated as anyone.
+    """
+    with pytest.raises(HTTPException):
+        get_user_id(Request({"type": "http", "method": "GET", "path": "/", "headers": []}))
 
 
 def test_the_api_never_loads_the_rendering_pipeline():

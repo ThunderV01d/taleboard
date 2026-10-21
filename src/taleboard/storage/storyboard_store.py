@@ -89,6 +89,18 @@ def shot_sk(scene_id: str, shot_id: str) -> str:
     """
     return f"SHOT#{scene_id}#{shot_id}"
 
+def owner_index_key(owner_id: str) -> str:
+    """
+    Builds the projects index's partition key for one user, so listing their projects is a single query.
+
+    Arguments:
+        owner_id: str - The user's ID.
+
+    Returns:
+        str - The index partition key.
+    """
+    return f"OWNER#{owner_id}"
+
 class StoryboardStore:
     """
     Reads and writes v0.2.0 projects in DynamoDB and S3.
@@ -144,24 +156,26 @@ class StoryboardStore:
                 return items
             query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    def create_project(self, name: str) -> Project:
+    def create_project(self, name: str, owner_id: str) -> Project:
         """
         Creates an empty project with a new, unique ID.
 
         Arguments:
             name: str - Name of the project.
+            owner_id: str - The user who owns it.
 
         Returns:
             Project - The new project.
         """
-        project = Project(name=name, created_at=datetime.now(timezone.utc))
+        project = Project(name=name, owner_id=owner_id, created_at=datetime.now(timezone.utc))
         self._table.put_item(
             Item={
                 "PK": project_pk(project.project_id),
                 "SK": "METADATA",
                 "name": project.name,
+                "owner_id": owner_id,
                 "created_at": project.created_at.isoformat(),
-                "GSI1PK": "PROJECTS", # Sparse index key -- only METADATA items carry it, so the index lists projects and nothing else
+                "GSI1PK": owner_index_key(owner_id),  # Sparse index key -- only METADATA items carry it, so the index lists projects and nothing else
                 "GSI1SK": project.created_at.isoformat(),
             },
             ConditionExpression="attribute_not_exists(PK)",  # Never overwrite an existing project, however unlikely an ID clash
@@ -185,15 +199,18 @@ class StoryboardStore:
             raise KeyError(f"No project with ID {project_id!r}")
         return _project_from_item(item)
 
-    def list_projects(self) -> list[Project]:
+    def list_projects(self, owner_id: str) -> list[Project]:
         """
-        Lists every project, newest first, through the sparse projects index.
+        Lists a user's projects, newest first, through the sparse projects index.
 
+        Arguments:
+            owner_id: str - The user.
+        
         Returns:
-            list[Project] - Every project.
+            list[Project] - Every project they own.
         """
         items = []
-        query = {"IndexName": PROJECTS_INDEX, "KeyConditionExpression": Key("GSI1PK").eq("PROJECTS"), "ScanIndexForward": False}
+        query = {"IndexName": PROJECTS_INDEX, "KeyConditionExpression": Key("GSI1PK").eq(owner_index_key(owner_id)), "ScanIndexForward": False}
         while True:
             response = self._table.query(**query)
             items.extend(response["Items"])
@@ -214,7 +231,7 @@ class StoryboardStore:
         Returns:
             Project - The renamed project.
         """
-        Project(name=name, created_at=datetime.now(timezone.utc))  # Validates the name the same way as at creation, before anything is written
+        Project(name=name, owner_id="unchanged", created_at=datetime.now(timezone.utc))  # Validates the name the same way as at creation, before anything is written
         try:
             item = self._table.update_item(
                 Key={"PK": project_pk(project_id), "SK": "METADATA"},
@@ -575,7 +592,7 @@ def _project_from_item(item: dict) -> Project:
     Returns:
         Project - The project.
     """
-    return Project(project_id=item["PK"].removeprefix("PROJECT#"), name=item["name"], created_at=item["created_at"])
+    return Project(project_id=item["PK"].removeprefix("PROJECT#"), name=item["name"], owner_id=item["owner_id"], created_at=item["created_at"])
 
 def _entry_from_item(model: type[Entry], item: dict, prefix: str) -> Entry:
     """

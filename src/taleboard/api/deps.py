@@ -7,7 +7,7 @@ Attributes:
 from functools import lru_cache
 from typing import Iterable
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 
 from taleboard.schema.storyboard import Project
 from taleboard.storage.storyboard_store import StoryboardStore
@@ -25,21 +25,44 @@ def get_boards() -> StoryboardStore:
     """
     return StoryboardStore.from_env()
 
-def get_project(project_id: str, boards: StoryboardStore = Depends(get_boards)) -> Project:
+def get_user_id(request: Request) -> str:
     """
-    Loads the project a route's path names, or answers 404 -- so every project-scoped route checks it in the same place.
+    The signed-in user's ID -- the sub claim of the token API Gateway's JWT authorizer has already verified.
+
+    The Lambda can trust these claims because only API Gateway invokes it, and only after checking the token's signature, expiry and app client. Fails closed: a request that arrives without verified claims (eg:- a route left without the authorizer) is refused rather than treated as anyone.
+
+    Arguments:
+        request: Request - The request (Mangum puts the Lambda event in its scope).
+
+    Returns:
+        str - The user's ID.
+    """
+    try:
+        return request.scope["aws.event"]["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
+    except (KeyError, TypeError):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not signed in", headers={"WWW-Authenticate": "Bearer"}) from None
+
+def get_project(project_id: str, user_id: str = Depends(get_user_id), boards: StoryboardStore = Depends(get_boards)) -> Project:
+    """
+    Loads the project a route's path names, or answers 404 -- so every project-scoped route checks it, and who owns it, in the same place.
+
+    Someone else's project is a 404 too, not a 403: a 403 would confirm that the project exists.
 
     Arguments:
         project_id: str - Unique project ID (from the path).
+        user_id: str - The signed-in user.
         boards: StoryboardStore - Store to read from.
 
     Returns:
         Project - The project.
     """
     try:
-        return boards.get_project(project_id)
+        project = boards.get_project(project_id)
     except KeyError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No project with ID {project_id!r}") from None
+        project = None
+    if project is None or project.owner_id != user_id:  # One answer for both, so the two can't be told apart
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No project with ID {project_id!r}")
+    return project
 
 def not_found(error: KeyError) -> HTTPException:
     """

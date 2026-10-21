@@ -4,7 +4,7 @@ Routes for projects: create, list, read, rename and delete.
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
 
-from taleboard.api.deps import get_boards, get_project
+from taleboard.api.deps import get_boards, get_project, get_user_id
 from taleboard.schema.storyboard import Project
 from taleboard.storage.storyboard_store import StoryboardStore
 
@@ -22,31 +22,33 @@ class ProjectIn(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=Project)
-def create_project(body: ProjectIn, boards: StoryboardStore = Depends(get_boards)) -> Project:
+def create_project(body: ProjectIn, user_id: str = Depends(get_user_id), boards: StoryboardStore = Depends(get_boards)) -> Project:
     """
-    Creates an empty project.
+    Creates an empty project, owned by the signed-in user.
 
     Arguments:
         body: ProjectIn - The project's name.
+        user_id: str - The signed-in user.
         boards: StoryboardStore - Store to write to.
 
     Returns:
         Project - The new project.
     """
-    return boards.create_project(body.name)
+    return boards.create_project(body.name, user_id)
 
 @router.get("", response_model=list[Project])
-def list_projects(boards: StoryboardStore = Depends(get_boards)) -> list[Project]:
+def list_projects(user_id: str = Depends(get_user_id), boards: StoryboardStore = Depends(get_boards)) -> list[Project]:
     """
-    Lists every project, newest first.
+    Lists the signed-in user's projects, newest first.
 
     Arguments:
+        user_id: str - The signed-in user.
         boards: StoryboardStore - Store to read from.
 
     Returns:
         list[Project] - Every project.
     """
-    return boards.list_projects()
+    return boards.list_projects(user_id)
 
 @router.get("/{project_id}", response_model=Project)
 def read_project(project: Project = Depends(get_project)) -> Project:

@@ -164,8 +164,10 @@ class Project(BaseModel):
     Attributes:
         project_id: str - Unique ID of the project. Defaults to a new random ID.
         name: str - Name of the project.
+        owner_id: str - User ID of the user who owns the project (Cognito sub).
         created_at: datetime - When the project was created (UTC).
     """
     project_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str = Field(min_length=1, max_length=200)
+    owner_id: str
     created_at: datetime

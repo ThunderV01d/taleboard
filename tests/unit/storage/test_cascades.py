@@ -43,7 +43,7 @@ def story(boards):
     Returns:
         dict - The project ID, and the scenes and shots by name.
     """
-    pid = boards.create_project("Lighthouse").project_id
+    pid = boards.create_project("Lighthouse", "mara-user").project_id
     for model, name in [(Location, "Office"), (Location, "Quay"), (Character, "Mara"), (Prop, "Lamp")]:
         boards.create_entry(pid, model, name)
     office, quay, empty = Scene(name="Office", order=0, location_id="office"), Scene(name="Quay", order=1, location_id="quay"), Scene(name="Later", order=2, location_id="office")
@@ -293,7 +293,7 @@ def test_deleting_a_project_removes_every_item_and_every_image(boards, story):
     Verifies that delete_project removes the project's metadata, registries, scenes and shots, and everything under its S3 prefix -- and nothing of another project's.
     """
     pid = story["pid"]
-    other = boards.create_project("Other").project_id
+    other = boards.create_project("Other", "mara-user").project_id
     for project_id in (pid, other):
         for name in ("a.png", "b/c.png"):
             boards._s3.put_object(Bucket=boards._bucket, Key=f"projects/{project_id}/{name}", Body=b"png")
