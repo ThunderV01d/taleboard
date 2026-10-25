@@ -14,25 +14,6 @@ export const ANGLE_LABELS: Record<Schemas["CameraAngle"], string> = {
   high: "High angle",
 }
 
-/** Grid rows are drawn as distance from the camera (see the backend's layout.py), so they're named that way */
-export const POSITION_LABELS: Record<Schemas["PositionCell"], string> = {
-  top_left: "Back left",
-  top_center: "Back centre",
-  top_right: "Back right",
-  mid_left: "Middle left",
-  mid_center: "Middle centre",
-  mid_right: "Middle right",
-  bottom_left: "Front left",
-  bottom_center: "Front centre",
-  bottom_right: "Front right",
-}
-
-export const SIZE_LABELS: Record<Schemas["SizeInFrame"], string> = {
-  small: "Small",
-  medium: "Medium",
-  large: "Large",
-}
-
 export const ORIENTATION_LABELS: Record<Schemas["Orientation"], string> = {
   towards_camera: "Facing camera",
   away_from_camera: "Facing away",
@@ -40,10 +21,66 @@ export const ORIENTATION_LABELS: Record<Schemas["Orientation"], string> = {
   right: "Facing right",
 }
 
-export const STATUS_LABELS: Record<Schemas["ProjectStatus"], string> = {
-  created: "Not started",
-  pending: "Queued",
-  in_progress: "Rendering",
-  complete: "Complete",
-  failed: "Failed",
+/** Which way the camera looks across the location -- picks the location's plate for that direction */
+export const FACING_LABELS: Record<Schemas["Facing"], string> = {
+  north: "North",
+  east: "East",
+  south: "South",
+  west: "West",
+}
+
+export const TIME_OF_DAY_LABELS: Record<Schemas["TimeOfDay"], string> = {
+  dawn: "Dawn",
+  day: "Day",
+  dusk: "Dusk",
+  night: "Night",
+}
+
+export const ATMOSPHERE_LABELS: Record<Schemas["Atmosphere"], string> = {
+  clear: "Clear",
+  overcast: "Overcast",
+  rainy: "Rainy",
+  foggy: "Foggy",
+  stormy: "Stormy",
+  snowy: "Snowy",
+}
+
+export const LAYER_TYPE_LABELS: Record<
+  Schemas["ShotOut"]["layers"][number]["type"],
+  string
+> = {
+  background: "Background",
+  character: "Character",
+  prop: "Prop",
+  text: "Text",
+  image: "Image",
+  group: "Group",
+}
+
+export const FONT_LABELS: Record<Schemas["TextLayer-Output"]["font"], string> =
+  {
+    sans: "Sans serif",
+    serif: "Serif",
+    mono: "Monospace",
+    handwritten: "Handwritten",
+  }
+
+/** The CSS font each of the text layer's generic fonts is drawn with */
+export const FONT_FAMILIES: Record<
+  Schemas["TextLayer-Output"]["font"],
+  string
+> = {
+  sans: "Geist Variable, Arial, sans-serif",
+  serif: "Georgia, 'Times New Roman', serif",
+  mono: "ui-monospace, Consolas, monospace",
+  handwritten: "'Segoe Print', 'Comic Sans MS', cursive",
+}
+
+export const ALIGN_LABELS: Record<
+  Schemas["TextLayer-Output"]["align"],
+  string
+> = {
+  left: "Left",
+  center: "Centre",
+  right: "Right",
 }

@@ -239,3 +239,32 @@ def test_the_api_never_loads_the_rendering_pipeline():
     """
     check = "import sys, taleboard.api.app; sys.exit('taleboard.rendering' in ' '.join(sys.modules))"
     assert subprocess.run([sys.executable, "-c", check]).returncode == 0
+
+
+@pytest.mark.parametrize("schema, fields", [
+    ("Project", {"project_id", "name", "owner_id", "created_at"}),
+    ("Scene", {"id", "name", "order", "location_id"}),
+    ("ShotOut", {"id", "layers", "version", "image_urls"}),
+    ("GroupLayer-Output", {"id", "transform", "children", "opacity", "visible"}),
+    ("Usage", {"scenes"}),
+])
+def test_response_schemas_list_fields_with_defaults_as_required(schema, fields):
+    """
+    Verifies that response schemas mark fields with defaults (ids, transforms, lists) as required -- the API always
+    sends them, so the frontend's generated types shouldn't make them optional.
+
+    Arguments:
+        schema: str - A response schema's name.
+        fields: set[str] - Fields with defaults that it must list as required.
+    """
+    assert fields <= set(app.openapi()["components"]["schemas"][schema]["required"])
+
+
+def test_request_schemas_still_let_defaults_be_left_out():
+    """
+    Verifies that the change is only to response schemas: a request may still leave out a layer's id or transform.
+    """
+    schemas = app.openapi()["components"]["schemas"]
+
+    assert "id" not in schemas["TextLayer-Input"].get("required", [])
+    assert "transform" not in schemas["TextLayer-Input"].get("required", [])

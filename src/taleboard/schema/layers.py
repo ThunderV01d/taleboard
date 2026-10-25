@@ -10,13 +10,14 @@ Attributes:
 """
 import uuid
 from typing import Annotated, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from taleboard.schema.base import Model
 from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
 
 FRAME_SIZE = 1024
 
-class Transform(BaseModel):
+class Transform(Model):
     """
     Where a layer sits in the frame and how it is distorted -- one transform covers moving, resizing, flipping, rotating and skewing.
 
@@ -37,7 +38,52 @@ class Transform(BaseModel):
     skew_x: float = 0.0
     skew_y: float = 0.0
 
-class LayerBase(BaseModel):
+class Point(Model):
+    """
+    A point on a layer's picture, as fractions of the picture's width and height: (0, 0) is the top-left corner and (1, 1) the bottom-right corner.
+
+    Attributes:
+        x: float - Across, as a fraction of the picture's width.
+        y: float - Down, as a fraction of the picture's width. 
+    """
+    x: float
+    y: float
+
+class Corners(Model):
+    """
+    Where a picture's four corners are pulled to, warping its perspective.
+
+    Each corner is a Point measured on the undistorted picture, so it can sit outside it (0 to 1) to stretch it outwards. Being fractions, they hold their shape when the picture is regenerated at another size. The layer's transform applies on top, as for any layer.
+
+    Attributes:
+        top_left: Point - Where the top-left corner goes. Defaults to (0, 0).
+        top_right: Point - Where the top-right corner goes. Defaults to (1, 0).
+        bottom_left: Point - Where the bottom-left corner goes. Defaults to (0, 1).
+        bottom_right: Point - Where the bottom-right corner goes. Defaults to (1, 1).
+    """
+    top_left: Point = Field(default_factory=lambda: Point(x=0,y=0))
+    top_right: Point = Field(default_factory=lambda: Point(x=1,y=0))
+    bottom_left: Point = Field(default_factory=lambda: Point(x=0,y=1))
+    bottom_right: Point = Field(default_factory=lambda: Point(x=1,y=1))
+
+    @model_validator(mode="after")
+    def _convex(self) -> "Corners":
+        """
+        Checks that the corners, in order, turn the same way at every corner (a convex shape) -- so the warp can never fold the picture over itself or turn it inside out.
+
+        Raises a ValueError if the shape is concave, crossed over, or flat.
+
+        Returns:
+            Corners - the same corners.
+        """
+        quad = [self.top_left, self.top_right, self.bottom_right, self.bottom_left]
+        for i in range(4):
+            a, b, c = quad[i], quad[(i+1)%4], quad[(i+2)%4]
+            if (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) <= 0: # The turn at b: positive is clockwise on screen
+                raise ValueError("corners must make a convex shape, in order: top-left, top-right, bottom-right, bottom-left")
+        return self
+
+class LayerBase(Model):
     """
     Attributes belonging to every layer, regardless of its type.
 
@@ -73,17 +119,27 @@ class TextLayer(LayerBase):
     colour: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
     align: Literal["left", "center", "right"] = "center"
 
-class ImageLayer(LayerBase):
+class PictureLayer(LayerBase):
+    """
+    What every layer drawn from a picture shares -- uploaded images and the three generated types: the picture, and how it is warped.
+
+    Attributes:
+        image: str - S3 key of the picture. Defaults to None (none uploaded or generated yet).
+        corners: Corners - Where the picture's corners are pulled to. Defaults to None (not warped).
+    """
+    image: str | None = None
+    corners: Corners | None = None
+
+class ImageLayer(PictureLayer):
     """
     An image the user uploaded. Never generated -- "Replace image" swaps the file.
+
     Attributes:
         type: Literal["image"] - Layer type.
-        image: str - S3 key of the uploaded image. Defaults to None (no image uploaded yet).    
     """
     type: Literal["image"] = "image"
-    image: str | None = None
 
-class GenerationContext(BaseModel):
+class GenerationContext(Model):
     """
     The shot- and scene-level values a background's image also depends on, alongside its own facing.
 
@@ -102,7 +158,7 @@ class GenerationContext(BaseModel):
     time_of_day: TimeOfDay
     atmosphere: Atmosphere
 
-class BackgroundParams(BaseModel):
+class BackgroundParams(Model):
     """
     Everything a background's image was generated from.
     """
@@ -114,30 +170,25 @@ class BackgroundParams(BaseModel):
     time_of_day: TimeOfDay
     atmosphere: Atmosphere
 
-class CharacterParams(BaseModel):
+class CharacterParams(Model):
     """
     Everything a character layer's image was generated from (besides the character's own registry entry).
     """
     orientation: Orientation
     action: str
 
-class PropParams(BaseModel):
+class PropParams(Model):
     """
     Everything a prop layer's image was generated from (besides the prop's own registry entry).
     """
     orientation: Orientation
 
-class GeneratedLayer(LayerBase):
+class GeneratedLayer(PictureLayer):
     """
     What the three generated layer types (background, character, prop) share: an image, and a record of exactly what produced it.
 
-    Each subclass says which values its image depends on (current_params); comparing those with the values its image was actually made from (last_generated_params) is what enables or disables its Regenerate button. Transforms are never part of either, so moving or resizing a layer never makes it need regenerating.
-
-    Attributes:
-        image: str - S3 key of the generated image. Defaults to None (not generated yet).
+    Each subclass says which values its image depends on (current_params); comparing those with the values its image was actually made from (last_generated_params) is what enables or disables its Regenerate button. Transforms and corners are never part of either, so moving, resizing or warping a layer never makes it need regenerating.
     """
-    image: str | None = None
-
     def current_params(self, context: GenerationContext) -> BaseModel:
         """
         The values this layer's image would be generated from now.

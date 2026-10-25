@@ -1,32 +1,38 @@
 /**
  * Typed client for the TaleBoard API.
  *
- * Types come from src/api/schema.d.ts, generated from the deployed API's live OpenAPI schema (npm run gen:api).
+ * Types come from src/api/schema.d.ts, generated from the backend's OpenAPI schema (npm run gen:api).
+ *
+ * Every request carries the signed-in user's Cognito access token -- the API's JWT authorizer refuses anything without one.
  */
+import { fetchAuthSession } from "aws-amplify/auth"
 import createClient from "openapi-fetch"
 
-import type { components, paths } from "@/api/schema"
-
-export type Project = components["schemas"]["ProjectOut"]
-export type JobStatus = components["schemas"]["StatusOut"]
-export type ProjectStatus = components["schemas"]["ProjectStatus"]
-export type Shot = components["schemas"]["ShotOut"]
-export type Region = components["schemas"]["Region"]
-export type Character = components["schemas"]["CharacterOut"]
-export type Location = components["schemas"]["LocationOut"]
+import type { paths } from "@/api/schema"
 
 const apiUrl = import.meta.env.VITE_API_URL
-const apiKey = import.meta.env.VITE_API_KEY
 
 /** Set when the build is missing its API settings, so the app can say so rather than fail every request */
-export const configError =
-  !apiUrl || !apiKey
-    ? "This build is missing VITE_API_URL or VITE_API_KEY (see frontend/README.md)."
-    : null
+export const configError = !apiUrl
+  ? "This build is missing VITE_API_URL (see frontend/README.md)."
+  : null
 
-const api = createClient<paths>({
+export const api = createClient<paths>({
   baseUrl: apiUrl?.replace(/\/+$/, ""),
-  headers: { "X-API-Key": apiKey },
+})
+
+api.use({
+  async onRequest({ request }) {
+    // Amplify swaps an expired access token for a fresh one first (using the refresh token), so this is always current
+    const { tokens } = await fetchAuthSession()
+    if (tokens?.accessToken) {
+      request.headers.set(
+        "Authorization",
+        `Bearer ${tokens.accessToken.toString()}`
+      )
+    }
+    return request
+  },
 })
 
 /** A failed API call, carrying the API's own error message where it gave one */
@@ -42,7 +48,7 @@ export class ApiError extends Error {
 /**
  * Returns a call's data, or throws an ApiError with a readable message.
  */
-function unwrap<T>(result: {
+export function unwrap<T>(result: {
   data?: T
   error?: unknown
   response: Response
@@ -51,6 +57,19 @@ function unwrap<T>(result: {
     return result.data
   }
   throw new ApiError(result.response.status, errorMessage(result))
+}
+
+/**
+ * Throws an ApiError unless the call succeeded -- for calls that answer with no body (204 No Content), which unwrap
+ * would treat as missing data.
+ */
+export function ensureOk(result: {
+  error?: unknown
+  response: Response
+}): void {
+  if (!result.response.ok) {
+    throw new ApiError(result.response.status, errorMessage(result))
+  }
 }
 
 /**
@@ -67,75 +86,4 @@ function errorMessage(result: { error?: unknown; response: Response }): string {
       .join("; ")
   }
   return `Request failed (HTTP ${result.response.status})`
-}
-
-/** True while a job is queued or rendering, ie:- while its status is worth polling */
-export function isRunning(status: ProjectStatus | undefined): boolean {
-  return status === "pending" || status === "in_progress"
-}
-
-/**
- * Creates a project and submits its story, returning the new project's ID.
- */
-export async function startStoryboard(
-  name: string,
-  story: string
-): Promise<string> {
-  const project = unwrap(await api.POST("/projects", { body: { name } }))
-  unwrap(
-    await api.POST("/projects/{project_id}/story", {
-      params: { path: { project_id: project.project_id } },
-      body: { story },
-    })
-  )
-  return project.project_id
-}
-
-export async function getProject(projectId: string): Promise<Project> {
-  return unwrap(
-    await api.GET("/projects/{project_id}", {
-      params: { path: { project_id: projectId } },
-    })
-  )
-}
-
-export async function getStatus(projectId: string): Promise<JobStatus> {
-  return unwrap(
-    await api.GET("/projects/{project_id}/status", {
-      params: { path: { project_id: projectId } },
-    })
-  )
-}
-
-/** Every shot so far, rendered or not -- each rendered one with a fresh, short-lived image URL */
-export async function getShots(projectId: string): Promise<Shot[]> {
-  return unwrap(
-    await api.GET("/projects/{project_id}/shots", {
-      params: { path: { project_id: projectId } },
-    })
-  )
-}
-
-
-/** Every project, newest first -- metadata and job state only */
-export async function getProjects(): Promise<Project[]> {
-  return unwrap(await api.GET("/projects"))
-}
-
-/** The project's cast, each with a fresh, short-lived reference image URL once one exists */
-export async function getCharacters(projectId: string): Promise<Character[]> {
-  return unwrap(
-    await api.GET("/projects/{project_id}/characters", {
-      params: { path: { project_id: projectId } },
-    })
-  )
-}
-
-/** The project's locations, each with a fresh, short-lived master plate URL once one exists */
-export async function getLocations(projectId: string): Promise<Location[]> {
-  return unwrap(
-    await api.GET("/projects/{project_id}/locations", {
-      params: { path: { project_id: projectId } },
-    })
-  )
 }

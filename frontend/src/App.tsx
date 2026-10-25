@@ -1,48 +1,62 @@
-import { ProjectView } from "@/components/project-view"
-import { StoryForm } from "@/components/story-form"
+import { Route, Routes, useMatch } from "react-router"
+
+import { AppHeader } from "@/components/app-header"
+import { RequireSignedIn, RequireSignedOut } from "@/components/route-guards"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
 import { configError } from "@/lib/api"
-import { useProjectId } from "@/lib/navigation"
-import { ProjectList } from "@/components/project-list"
+import { authConfigError } from "@/lib/auth"
+import { AuthCallbackPage } from "@/pages/auth-callback"
+import { LandingPage } from "@/pages/landing"
+import { LoginPage } from "@/pages/login"
+import { NotFoundPage } from "@/pages/not-found"
+import { ProjectEditorPage } from "@/pages/project-editor"
+import { ProjectsPage } from "@/pages/projects"
+import { RegistryPage } from "@/pages/registry"
+import { SignUpPage } from "@/pages/sign-up"
+
+const setupError = configError ?? authConfigError
 
 export function App() {
-  const [projectId, openProject] = useProjectId()
-
+  // The editor fills the window exactly (its panels scroll on their own); every other page is a centred column
+  const inEditor = useMatch("/projects/:projectId") !== null
   return (
-    <div className="min-h-svh">
-      <header className="border-b">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <button
-            className="text-lg font-semibold"
-            onClick={() => openProject(null)}
-          >
-            TaleBoard
-          </button>
-          {projectId && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openProject(null)}
-            >
-              New story
-            </Button>
-          )}
-        </div>
-      </header>
-      <main className="mx-auto max-w-5xl px-4 py-8">
-        {configError ? (
+    <div
+      className={inEditor ? "flex h-svh flex-col overflow-hidden" : "min-h-svh"}
+    >
+      <AppHeader />
+      <main
+        className={
+          inEditor
+            ? "flex min-h-0 flex-1 flex-col"
+            : "mx-auto max-w-6xl px-4 py-8"
+        }
+      >
+        {setupError ? (
           <Alert variant="destructive">
             <AlertTitle>Not configured</AlertTitle>
-            <AlertDescription>{configError}</AlertDescription>
+            <AlertDescription>{setupError}</AlertDescription>
           </Alert>
-        ) : projectId ? (
-          <ProjectView key={projectId} projectId={projectId} />
         ) : (
-          <div className="space-y-12">
-            <StoryForm onStarted={openProject} />
-            <ProjectList onOpen={openProject} />
-          </div>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/auth/callback" element={<AuthCallbackPage />} />
+            <Route element={<RequireSignedOut />}>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/signup" element={<SignUpPage />} />
+            </Route>
+            <Route element={<RequireSignedIn />}>
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route
+                path="/projects/:projectId"
+                element={<ProjectEditorPage />}
+              />
+              <Route
+                path="/projects/:projectId/:registry"
+                element={<RegistryPage />}
+              />
+            </Route>
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
         )}
       </main>
     </div>

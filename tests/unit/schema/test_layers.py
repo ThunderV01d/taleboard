@@ -8,8 +8,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
 from taleboard.schema.layers import (
-    FRAME_SIZE, BackgroundLayer, BackgroundParams, CharacterLayer, CharacterParams, GeneratedLayer, GenerationContext,
-    GroupLayer, ImageLayer, Layer, PropLayer, TextLayer, Transform,
+    FRAME_SIZE, BackgroundLayer, BackgroundParams, CharacterLayer, CharacterParams, Corners, GeneratedLayer, GenerationContext,
+    GroupLayer, ImageLayer, Layer, Point, PropLayer, TextLayer, Transform,
 )
 
 LAYER = TypeAdapter(Layer)
@@ -193,7 +193,7 @@ def test_regeneration_is_needed_after_a_change_and_not_after_undoing_it(layer, c
 @pytest.mark.parametrize("layer", [BackgroundLayer(), CharacterLayer(character_id="mara"), PropLayer(prop_id="lamp")])
 def test_moving_or_restyling_a_layer_never_needs_regeneration(layer):
     """
-    Verifies that transform, opacity, visibility and name edits never enable Regenerate -- blocking is free.
+    Verifies that transform, warp, opacity, visibility and name edits never enable Regenerate -- blocking is free.
 
     Arguments:
         layer: GeneratedLayer - A layer to generate and then move.
@@ -203,6 +203,7 @@ def test_moving_or_restyling_a_layer_never_needs_regeneration(layer):
 
     layer.transform = Transform(x=10, y=20, scale_x=-2, rotation=45, skew_y=5)
     layer.opacity, layer.visible, layer.name = 0.3, False, "renamed"
+    layer.corners = Corners(top_left=Point(x=0.1, y=-0.2))
 
     assert layer.needs_regeneration(context) is False
 
@@ -252,3 +253,50 @@ def test_a_generated_layer_type_that_forgets_its_params_fails_loudly():
     """
     with pytest.raises(NotImplementedError):
         GeneratedLayer().current_params(_context())
+
+
+def test_a_picture_starts_unwarped_and_its_default_corners_are_its_own():
+    """
+    Verifies that picture layers start with no corners, and that Corners() leaves the picture as it is.
+    """
+    corners = Corners()
+
+    assert [ImageLayer().corners, BackgroundLayer().corners] == [None, None]
+    assert [(p.x, p.y) for p in (corners.top_left, corners.top_right, corners.bottom_right, corners.bottom_left)] == [(0, 0), (1, 0), (1, 1), (0, 1)]
+
+
+def test_corners_can_be_pulled_outside_the_picture():
+    """
+    Verifies that corners beyond the picture's edges are allowed -- stretching it outwards.
+    """
+    corners = Corners(top_left=Point(x=-0.5, y=-0.25), bottom_right=Point(x=1.5, y=2))
+
+    assert (corners.top_left.x, corners.bottom_right.y) == (-0.5, 2)
+
+
+@pytest.mark.parametrize("changes", [
+    {"top_left": Point(x=1, y=0), "top_right": Point(x=0, y=0)},  # Crossed over: the top edge runs backwards
+    {"top_left": Point(x=0.8, y=0.8)},  # Pushed in past the diagonal: concave
+    {"top_left": Point(x=1, y=0)},  # Onto another corner: flat
+    {"top_right": Point(x=0, y=1), "bottom_left": Point(x=1, y=0)},  # Mirrored: anticlockwise
+])
+def test_corners_that_would_fold_the_picture_are_rejected(changes):
+    """
+    Verifies that only convex, clockwise corners are accepted, so a warp can't fold or flip the picture.
+
+    Arguments:
+        changes: dict - Corners to move from where they start.
+    """
+    with pytest.raises(ValidationError, match="convex"):
+        Corners(**changes)
+
+
+def test_corners_round_trip_on_picture_layers():
+    """
+    Verifies that a warped layer's corners survive being saved as plain data and read back.
+    """
+    layer = PropLayer(prop_id="lamp", corners=Corners(top_right=Point(x=0.9, y=0.1)))
+
+    loaded = LAYER.validate_python(LAYER.dump_python(layer, mode="json"))
+
+    assert loaded == layer

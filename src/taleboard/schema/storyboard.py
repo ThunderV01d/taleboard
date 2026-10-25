@@ -7,13 +7,14 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
+from taleboard.schema.base import Model
 from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
 from taleboard.schema.layers import GenerationContext, GroupLayer, Layer
 
 
-class Reference(BaseModel):
+class Reference(Model):
     """
     One reference image of a character or prop, in one orientation. Every pose of them in that orientation is matched to it.
 
@@ -24,7 +25,7 @@ class Reference(BaseModel):
     image: str
     source: Literal["generated", "sketch"]
 
-class Character(BaseModel):
+class Character(Model):
     """
     A character in the project's registry -- who they are and what they look like, never where they stand in a shot.
 
@@ -41,7 +42,7 @@ class Character(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     references: dict[Orientation, Reference] = Field(default_factory=dict)
 
-class Prop(BaseModel):
+class Prop(Model):
     """
     A prop in the project's registry. Composited into shots like a character, with references added per orientation as they are needed.
 
@@ -56,7 +57,7 @@ class Prop(BaseModel):
     description: str = Field(default="", max_length=300)
     references: dict[Orientation, Reference] = Field(default_factory=dict)
 
-class Location(BaseModel):
+class Location(Model):
     """
     A place in the project's registry. Every scene set there is drawn from its plates.
 
@@ -71,7 +72,7 @@ class Location(BaseModel):
     description: str = Field(default="", max_length=300)
     plates: dict[Facing, str] = Field(default_factory=dict)
 
-class Scene(BaseModel):
+class Scene(Model):
     """
     A run of shots in one place, at one time of day and in one atmosphere. A change of any of these is a new scene.
 
@@ -92,7 +93,7 @@ class Scene(BaseModel):
     time_of_day: TimeOfDay = TimeOfDay.DAY
     atmosphere: Atmosphere = Atmosphere.CLEAR
 
-class Shot(BaseModel):
+class Shot(Model):
     """
     One storyboard panel: its framing, and the layer graph it is drawn from. Its location and lighting are its scene's.
 
@@ -157,7 +158,7 @@ class Shot(BaseModel):
             raise ValueError("Two layers in this shot have the same id")
         return self
 
-class Project(BaseModel):
+class Project(Model):
     """
     A project's own details. Its registries, scenes and shots are stored and loaded separately.
 

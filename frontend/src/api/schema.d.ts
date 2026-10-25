@@ -13,26 +13,28 @@ export interface paths {
         };
         /**
          * List Projects
-         * @description Lists every project, newest first.
+         * @description Lists the signed-in user's projects, newest first.
          *
          *     Arguments:
-         *         store: ProjectStore - Store to read from.
+         *         user_id: str - The signed-in user.
+         *         boards: StoryboardStore - Store to read from.
          *
          *     Returns:
-         *         list[ProjectOut] - Every project's metadata.
+         *         list[Project] - Every project.
          */
         get: operations["list_projects_projects_get"];
         put?: never;
         /**
          * Create Project
-         * @description Creates an empty project.
+         * @description Creates an empty project, owned by the signed-in user.
          *
          *     Arguments:
          *         body: ProjectIn - The project's name.
-         *         store: ProjectStore - Store to write to.
+         *         user_id: str - The signed-in user.
+         *         boards: StoryboardStore - Store to write to.
          *
          *     Returns:
-         *         ProjectOut - A new project.
+         *         Project - The new project.
          */
         post: operations["create_project_projects_post"];
         delete?: never;
@@ -49,128 +51,45 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Project
-         * @description Gets one project's metadata and render job state.
+         * Read Project
+         * @description Gets one project.
          *
          *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         store: ProjectStore - Store to read from.
+         *         project: Project - The project the path names (a 404 if it doesn't exist).
          *
          *     Returns:
-         *         ProjectOut - The project.
+         *         Project - The project.
          */
-        get: operations["get_project_projects__project_id__get"];
+        get: operations["read_project_projects__project_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/story": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
         /**
-         * Submit Story
-         * @description Stores a story and queues its render job, returning straight away -- rendering happens in the worker.
+         * Delete Project
+         * @description Deletes a project and everything in it -- its registries, scenes, shots and images. It can't be undone.
          *
          *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         body: StoryIn - The story.
-         *         store: ProjectStore - Store to write to.
-         *         queue: JobQueue - Queue to put the render job on.
+         *         project: Project - The project the path names (a 404 if it doesn't exist).
+         *         boards: StoryboardStore - Store to delete from.
          *
          *     Returns:
-         *         JobAccepted - The job's ID, and where to poll its progress.
+         *         Response - An empty 204.
          */
-        post: operations["submit_story_projects__project_id__story_post"];
-        delete?: never;
+        delete: operations["delete_project_projects__project_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * Get Status
-         * @description Reports a render job's progress. Progress is read from the shots themselves -- the same record the worker resumes from.
+         * Rename Project
+         * @description Renames a project.
+         *
          *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         store: ProjectStore - Store to read from.
+         *         body: ProjectIn - The project's new name.
+         *         project: Project - The project the path names (a 404 if it doesn't exist).
+         *         boards: StoryboardStore - Store to write to.
+         *
          *     Returns:
-         *         StatusOut - The job's progress.
+         *         Project - The renamed project.
          */
-        get: operations["get_status_projects__project_id__status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/shots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Shots
-         * @description Lists a project's shots in story order -- including unrendered ones while a job is running.
-         *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         store: ProjectStore - Store to read from.
-         *     Returns:
-         *         list[ShotOut] - Every shot so far.
-         */
-        get: operations["list_shots_projects__project_id__shots_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/shots/{shot_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Shot
-         * @description Gets one shot. The shot ID is its position in the story ("7" and "0007" both work).
-         *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         shot_id: str - The shot's position in the story.
-         *         store: ProjectStore - Store to read from.
-         *     Returns:
-         *         ShotOut - The shot.
-         */
-        get: operations["get_shot_projects__project_id__shots__shot_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
+        patch: operations["rename_project_projects__project_id__patch"];
         trace?: never;
     };
     "/projects/{project_id}/characters": {
@@ -181,15 +100,134 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Characters
-         * @description Lists a project's cast, with a download URL for each reference image that has been generated.
-         *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         store: ProjectStore - Store to read from.
-         *     Returns:
-         *         list[CharacterOut] - Every character.
+         * List Entries
+         * @description Lists every entry in the registry, by ID.
          */
-        get: operations["list_characters_projects__project_id__characters_get"];
+        get: operations["list_entries_projects__project_id__characters_get"];
+        put?: never;
+        /**
+         * Create Entry
+         * @description Adds an entry, with an ID made from its name (suffixed if that's taken).
+         */
+        post: operations["create_entry_projects__project_id__characters_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/characters/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Entry
+         * @description Gets one entry.
+         */
+        get: operations["read_entry_projects__project_id__characters__entry_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Entry
+         * @description Deletes the entry, and every layer showing it.
+         */
+        delete: operations["delete_entry_projects__project_id__characters__entry_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit Entry
+         * @description Changes the fields sent, keeping everything else -- its ID and images included.
+         */
+        patch: operations["edit_entry_projects__project_id__characters__entry_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/characters/{entry_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Entry Usage
+         * @description Where the entry is used -- what the delete confirmation lists.
+         */
+        get: operations["entry_usage_projects__project_id__characters__entry_id__usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/props": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Entries
+         * @description Lists every entry in the registry, by ID.
+         */
+        get: operations["list_entries_projects__project_id__props_get"];
+        put?: never;
+        /**
+         * Create Entry
+         * @description Adds an entry, with an ID made from its name (suffixed if that's taken).
+         */
+        post: operations["create_entry_projects__project_id__props_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/props/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Entry
+         * @description Gets one entry.
+         */
+        get: operations["read_entry_projects__project_id__props__entry_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Entry
+         * @description Deletes the entry, and every layer showing it.
+         */
+        delete: operations["delete_entry_projects__project_id__props__entry_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit Entry
+         * @description Changes the fields sent, keeping everything else -- its ID and images included.
+         */
+        patch: operations["edit_entry_projects__project_id__props__entry_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/props/{entry_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Entry Usage
+         * @description Where the entry is used -- what the delete confirmation lists.
+         */
+        get: operations["entry_usage_projects__project_id__props__entry_id__usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -206,19 +244,228 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Locations
-         * @description Lists a project's locations, with a download URL for each master plate that has been generated.
-         *
-         *     Arguments:
-         *         project_id: str - Unique project ID.
-         *         store: ProjectStore - Store to read from.
-         *
-         *     Returns:
-         *         list[LocationOut] - Every location. Empty for a project broken down before locations existed.
+         * List Entries
+         * @description Lists every entry in the registry, by ID.
          */
-        get: operations["list_locations_projects__project_id__locations_get"];
+        get: operations["list_entries_projects__project_id__locations_get"];
+        put?: never;
+        /**
+         * Create Entry
+         * @description Adds an entry, with an ID made from its name (suffixed if that's taken).
+         */
+        post: operations["create_entry_projects__project_id__locations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/locations/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Entry
+         * @description Gets one entry.
+         */
+        get: operations["read_entry_projects__project_id__locations__entry_id__get"];
         put?: never;
         post?: never;
+        /**
+         * Delete Entry
+         * @description Deletes a location, after moving or deleting its scenes -- exactly one of the two must be asked for.
+         */
+        delete: operations["delete_entry_projects__project_id__locations__entry_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit Entry
+         * @description Changes the fields sent, keeping everything else -- its ID and images included.
+         */
+        patch: operations["edit_entry_projects__project_id__locations__entry_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/locations/{entry_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Entry Usage
+         * @description Where the entry is used -- what the delete confirmation lists.
+         */
+        get: operations["entry_usage_projects__project_id__locations__entry_id__usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Scenes
+         * @description Lists the project's scenes, in story order.
+         */
+        get: operations["list_scenes_projects__project_id__scenes_get"];
+        put?: never;
+        /**
+         * Create Scene
+         * @description Adds a scene at the end of the project, in a location that must already exist.
+         */
+        post: operations["create_scene_projects__project_id__scenes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reorder Scenes
+         * @description Puts the project's scenes in a new order -- given as the full list of their IDs -- and renumbers them from 0.
+         */
+        put: operations["reorder_scenes_projects__project_id__scenes_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes/{scene_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Scene
+         * @description Gets one scene.
+         */
+        get: operations["read_scene_projects__project_id__scenes__scene_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Scene
+         * @description Deletes a scene and all its shots. It can't be undone.
+         */
+        delete: operations["delete_scene_projects__project_id__scenes__scene_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit Scene
+         * @description Changes the fields sent. Moving a scene to another location (which must exist), or changing its lighting, leaves its backgrounds needing regeneration.
+         */
+        patch: operations["edit_scene_projects__project_id__scenes__scene_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes/{scene_id}/shots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Shots
+         * @description Lists the scene's shots, in order.
+         */
+        get: operations["list_shots_projects__project_id__scenes__scene_id__shots_get"];
+        put?: never;
+        /**
+         * Create Shot
+         * @description Adds a shot at the end of the scene, holding just a background layer (not yet generated).
+         */
+        post: operations["create_shot_projects__project_id__scenes__scene_id__shots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes/{scene_id}/shots/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reorder Shots
+         * @description Puts the scene's shots in a new order -- given as the full list of their IDs -- and renumbers them from 0. Each shot that moves is saved, so its version goes up.
+         */
+        put: operations["reorder_shots_projects__project_id__scenes__scene_id__shots_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/scenes/{scene_id}/shots/{shot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Shot
+         * @description Gets one shot.
+         */
+        get: operations["read_shot_projects__project_id__scenes__scene_id__shots__shot_id__get"];
+        /**
+         * Save Shot
+         * @description Replaces the shot's editable fields and layers -- refused with a 409 if it has been saved since the version sent. Returns it with its new version.
+         */
+        put: operations["save_shot_projects__project_id__scenes__scene_id__shots__shot_id__put"];
+        post?: never;
+        /**
+         * Delete Shot
+         * @description Deletes a shot. It can't be undone.
+         */
+        delete: operations["delete_shot_projects__project_id__scenes__scene_id__shots__shot_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Upload
+         * @description Hands out a form for uploading one image to a new key in the project's uploads folder.
+         */
+        post: operations["start_upload_projects__project_id__uploads_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -230,36 +477,426 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * Atmosphere
+         * @description Weather and atmosphere of a scene. Lights the scene's backgrounds together with its time of day.
+         * @enum {string}
+         */
+        Atmosphere: "clear" | "overcast" | "rainy" | "foggy" | "stormy" | "snowy";
+        /**
+         * BackgroundLayer
+         * @description The shot's location, seen facing one way. Its location is the scene's, so it isn't stored here.
+         *
+         *     Attributes:
+         *         type: Literal["background"] - Layer type.
+         *         facing: Facing - Which way the camera faces within the location. Defaults to NORTH.
+         *         last_generated_params: BackgroundParams - What the image was generated from. Defaults to None (not generated yet).
+         */
+        "BackgroundLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image?: string | null;
+            corners?: components["schemas"]["Corners-Input"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "background";
+            /** @default north */
+            facing: components["schemas"]["Facing"];
+            last_generated_params?: components["schemas"]["BackgroundParams"] | null;
+        };
+        /**
+         * BackgroundLayer
+         * @description The shot's location, seen facing one way. Its location is the scene's, so it isn't stored here.
+         *
+         *     Attributes:
+         *         type: Literal["background"] - Layer type.
+         *         facing: Facing - Which way the camera faces within the location. Defaults to NORTH.
+         *         last_generated_params: BackgroundParams - What the image was generated from. Defaults to None (not generated yet).
+         */
+        "BackgroundLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image: string | null;
+            corners: components["schemas"]["Corners-Output"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "background";
+            /** @default north */
+            facing: components["schemas"]["Facing"];
+            last_generated_params: components["schemas"]["BackgroundParams"] | null;
+        };
+        /**
+         * BackgroundParams
+         * @description Everything a background's image was generated from.
+         */
+        BackgroundParams: {
+            /** Location Id */
+            location_id: string;
+            facing: components["schemas"]["Facing"];
+            shot_size: components["schemas"]["ShotSize"];
+            angle: components["schemas"]["CameraAngle"];
+            /** Details */
+            details: string;
+            time_of_day: components["schemas"]["TimeOfDay"];
+            atmosphere: components["schemas"]["Atmosphere"];
+        };
+        /**
          * CameraAngle
          * @description Camera angle of the shot.
          * @enum {string}
          */
         CameraAngle: "eye_level" | "low" | "high";
         /**
-         * CharacterOut
-         * @description One character, as clients see them.
+         * CharacterIn
+         * @description Request body for creating a character.
          *
          *     Attributes:
-         *         character_id: str - Unique character ID.
-         *         name: str - Full name of the character.
-         *         description: str - Visual description of the character.
-         *         aliases: list[str] - Other ways the story refers to the character.
-         *         appearance_reference: str - S3 key of the character's reference image, once generated.
-         *         appearance_reference_url: str - Temporary download URL for the chracter's reference image, once generated.
+         *         aliases: list[str] - Other ways the story refers to them. Defaults to [].
          */
-        CharacterOut: {
-            /** Character Id */
-            character_id: string;
+        CharacterIn: {
             /** Name */
             name: string;
-            /** Description */
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Aliases */
+            aliases?: string[];
+        };
+        /**
+         * CharacterLayer
+         * @description One character, posed for this shot.
+         *
+         *     Attributes:
+         *         type: Literal["character"] - Layer type.
+         *         character_id: str - The character (in the project's registry) this layer shows.
+         *         orientation: Orientation - Which way the character faces, relative to the camera. Defaults to TOWARDS_CAMERA.
+         *         action: str - What the character is doing -- drawn as their pose. Defaults to "".
+         *         last_generated_params: CharacterParams - What the image was generated from. Defaults to None (not generated yet).
+         */
+        "CharacterLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image?: string | null;
+            corners?: components["schemas"]["Corners-Input"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "character";
+            /** Character Id */
+            character_id: string;
+            /** @default towards_camera */
+            orientation: components["schemas"]["Orientation"];
+            /**
+             * Action
+             * @default
+             */
+            action: string;
+            last_generated_params?: components["schemas"]["CharacterParams"] | null;
+        };
+        /**
+         * CharacterLayer
+         * @description One character, posed for this shot.
+         *
+         *     Attributes:
+         *         type: Literal["character"] - Layer type.
+         *         character_id: str - The character (in the project's registry) this layer shows.
+         *         orientation: Orientation - Which way the character faces, relative to the camera. Defaults to TOWARDS_CAMERA.
+         *         action: str - What the character is doing -- drawn as their pose. Defaults to "".
+         *         last_generated_params: CharacterParams - What the image was generated from. Defaults to None (not generated yet).
+         */
+        "CharacterLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image: string | null;
+            corners: components["schemas"]["Corners-Output"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "character";
+            /** Character Id */
+            character_id: string;
+            /** @default towards_camera */
+            orientation: components["schemas"]["Orientation"];
+            /**
+             * Action
+             * @default
+             */
+            action: string;
+            last_generated_params: components["schemas"]["CharacterParams"] | null;
+        };
+        /**
+         * CharacterOut
+         * @description A character, with a download URL for each of their reference images.
+         *
+         *     Attributes:
+         *         image_urls: dict[str,str] - Download URL for each image key in the entry.
+         */
+        CharacterOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
             description: string;
             /** Aliases */
             aliases: string[];
-            /** Appearance Reference */
-            appearance_reference: string | null;
-            /** Appearance Reference Url */
-            appearance_reference_url: string | null;
+            /** References */
+            references: {
+                [key: string]: components["schemas"]["Reference"];
+            };
+            /** Image Urls */
+            image_urls: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * CharacterParams
+         * @description Everything a character layer's image was generated from (besides the character's own registry entry).
+         */
+        CharacterParams: {
+            orientation: components["schemas"]["Orientation"];
+            /** Action */
+            action: string;
+        };
+        /**
+         * CharacterPatch
+         * @description Request body for editing a character.
+         *
+         *     Attributes:
+         *         aliases: list[str] - New aliases (replacing the old ones). Defaults to None (unchanged).
+         */
+        CharacterPatch: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Aliases */
+            aliases?: string[] | null;
+        };
+        /**
+         * Corners
+         * @description Where a picture's four corners are pulled to, warping its perspective.
+         *
+         *     Each corner is a Point measured on the undistorted picture, so it can sit outside it (0 to 1) to stretch it outwards. Being fractions, they hold their shape when the picture is regenerated at another size. The layer's transform applies on top, as for any layer.
+         *
+         *     Attributes:
+         *         top_left: Point - Where the top-left corner goes. Defaults to (0, 0).
+         *         top_right: Point - Where the top-right corner goes. Defaults to (1, 0).
+         *         bottom_left: Point - Where the bottom-left corner goes. Defaults to (0, 1).
+         *         bottom_right: Point - Where the bottom-right corner goes. Defaults to (1, 1).
+         */
+        "Corners-Input": {
+            top_left?: components["schemas"]["Point"];
+            top_right?: components["schemas"]["Point"];
+            bottom_left?: components["schemas"]["Point"];
+            bottom_right?: components["schemas"]["Point"];
+        };
+        /**
+         * Corners
+         * @description Where a picture's four corners are pulled to, warping its perspective.
+         *
+         *     Each corner is a Point measured on the undistorted picture, so it can sit outside it (0 to 1) to stretch it outwards. Being fractions, they hold their shape when the picture is regenerated at another size. The layer's transform applies on top, as for any layer.
+         *
+         *     Attributes:
+         *         top_left: Point - Where the top-left corner goes. Defaults to (0, 0).
+         *         top_right: Point - Where the top-right corner goes. Defaults to (1, 0).
+         *         bottom_left: Point - Where the bottom-left corner goes. Defaults to (0, 1).
+         *         bottom_right: Point - Where the bottom-right corner goes. Defaults to (1, 1).
+         */
+        "Corners-Output": {
+            top_left: components["schemas"]["Point"];
+            top_right: components["schemas"]["Point"];
+            bottom_left: components["schemas"]["Point"];
+            bottom_right: components["schemas"]["Point"];
+        };
+        /**
+         * EntryIn
+         * @description Request body for creating a prop or location.
+         *
+         *     Attributes:
+         *         name: str - Name of the entry (its ID is made from this, once).
+         *         description: str - What it looks like, in words. Defaults to "".
+         */
+        EntryIn: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+        };
+        /**
+         * EntryPatch
+         * @description Request body for editing a prop or location. Only the fields sent are changed; the ID never is, even if the name is.
+         *
+         *     Attributes:
+         *         name: str - New name. Defaults to None (unchanged).
+         *         description: str - New description. Defaults to None (unchanged).
+         */
+        EntryPatch: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+        };
+        /**
+         * Facing
+         * @description Direction the camera faces within a location, as a compass point. Each facing is its own background plate of that location.
+         * @enum {string}
+         */
+        Facing: "north" | "east" | "south" | "west";
+        /**
+         * GroupLayer
+         * @description A container that moves and fades several layers together (eg:- a prop held in a character's hand). Never generated itself.
+         *
+         *     Its transform and opacity apply on top of each child's own; children are listed bottom to top, as in a shot.
+         *
+         *     Attributes:
+         *         type: Literal["group"] - Layer type.
+         *         children: list[Layer] - The layers inside the group, bottom to top. Defaults to [].
+         */
+        "GroupLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "group";
+            /** Children */
+            children?: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
+        };
+        /**
+         * GroupLayer
+         * @description A container that moves and fades several layers together (eg:- a prop held in a character's hand). Never generated itself.
+         *
+         *     Its transform and opacity apply on top of each child's own; children are listed bottom to top, as in a shot.
+         *
+         *     Attributes:
+         *         type: Literal["group"] - Layer type.
+         *         children: list[Layer] - The layers inside the group, bottom to top. Defaults to [].
+         */
+        "GroupLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "group";
+            /** Children */
+            children: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -267,41 +904,100 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
-         * JobAccepted
-         * @description Response to a submitted story.
+         * ImageLayer
+         * @description An image the user uploaded. Never generated -- "Replace image" swaps the file.
          *
          *     Attributes:
-         *         job_id: str - Unique render job ID.
-         *         status_url: str - Where to poll the job's progress.
+         *         type: Literal["image"] - Layer type.
          */
-        JobAccepted: {
-            /** Job Id */
-            job_id: string;
-            /** Status Url */
-            status_url: string;
+        "ImageLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image?: string | null;
+            corners?: components["schemas"]["Corners-Input"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "image";
+        };
+        /**
+         * ImageLayer
+         * @description An image the user uploaded. Never generated -- "Replace image" swaps the file.
+         *
+         *     Attributes:
+         *         type: Literal["image"] - Layer type.
+         */
+        "ImageLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image: string | null;
+            corners: components["schemas"]["Corners-Output"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "image";
         };
         /**
          * LocationOut
-         * @description One location, as clients see it.
+         * @description A location, with a download URL for each of its plates.
          *
          *     Attributes:
-         *         location_id: str - Unique location ID (what each shot's location_id refers to).
-         *         name: str - Short name of the place.
-         *         description: str - Visual description of the place.
-         *         master_plate: str - S3 key of the location's master plate, once generated.
-         *         master_plate_url: str - Temporary download URL for the location's master plate, once generated.
+         *         image_urls: dict[str,str] - Download URL for each image key in the entry.
          */
         LocationOut: {
-            /** Location Id */
-            location_id: string;
+            /** Id */
+            id: string;
             /** Name */
             name: string;
-            /** Description */
+            /**
+             * Description
+             * @default
+             */
             description: string;
-            /** Master Plate */
-            master_plate: string | null;
-            /** Master Plate Url */
-            master_plate_url: string | null;
+            /** Plates */
+            plates: {
+                [key: string]: string;
+            };
+            /** Image Urls */
+            image_urls: {
+                [key: string]: string;
+            };
         };
         /**
          * Orientation
@@ -310,14 +1006,45 @@ export interface components {
          */
         Orientation: "towards_camera" | "away_from_camera" | "left" | "right";
         /**
-         * PositionCell
-         * @description Character positioning within a 3x3 grid over the frame.
-         * @enum {string}
+         * Point
+         * @description A point on a layer's picture, as fractions of the picture's width and height: (0, 0) is the top-left corner and (1, 1) the bottom-right corner.
+         *
+         *     Attributes:
+         *         x: float - Across, as a fraction of the picture's width.
+         *         y: float - Down, as a fraction of the picture's width.
          */
-        PositionCell: "top_left" | "top_center" | "top_right" | "mid_left" | "mid_center" | "mid_right" | "bottom_left" | "bottom_center" | "bottom_right";
+        Point: {
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+        };
+        /**
+         * Project
+         * @description A project's own details. Its registries, scenes and shots are stored and loaded separately.
+         *
+         *     Attributes:
+         *         project_id: str - Unique ID of the project. Defaults to a new random ID.
+         *         name: str - Name of the project.
+         *         owner_id: str - User ID of the user who owns the project (Cognito sub).
+         *         created_at: datetime - When the project was created (UTC).
+         */
+        Project: {
+            /** Project Id */
+            project_id: string;
+            /** Name */
+            name: string;
+            /** Owner Id */
+            owner_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /**
          * ProjectIn
-         * @description Request body for creating a project.
+         * @description Request body for creating or renaming a project.
          *
          *     Attributes:
          *         name: str - Name of the project.
@@ -327,110 +1054,383 @@ export interface components {
             name: string;
         };
         /**
-         * ProjectOut
-         * @description A project's metadata and render job state.
+         * PropLayer
+         * @description One prop, drawn for this shot.
          *
          *     Attributes:
-         *         project_id: str - Unique project ID.
-         *         name: str - Name of the project.
-         *         created_at: datetime - When the project was created (UTC).
-         *         status: ProjectStatus - Where the project's render job is.
-         *         shot_count: int - Number of shots, once the breakdown is final.
-         *         error: str - Why the render job failed (if it failed).
+         *         type: Literal["prop"] - Layer type.
+         *         prop_id: str - The prop (in the project's registry) this layer shows.
+         *         orientation: Orientation - Which way the prop faces, relative to the camera. Defaults to TOWARDS_CAMERA.
+         *         last_generated_params: PropParams - What the image was generated from. Defaults to None (not generated yet).
          */
-        ProjectOut: {
-            /** Project Id */
-            project_id: string;
+        "PropLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image?: string | null;
+            corners?: components["schemas"]["Corners-Input"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "prop";
+            /** Prop Id */
+            prop_id: string;
+            /** @default towards_camera */
+            orientation: components["schemas"]["Orientation"];
+            last_generated_params?: components["schemas"]["PropParams"] | null;
+        };
+        /**
+         * PropLayer
+         * @description One prop, drawn for this shot.
+         *
+         *     Attributes:
+         *         type: Literal["prop"] - Layer type.
+         *         prop_id: str - The prop (in the project's registry) this layer shows.
+         *         orientation: Orientation - Which way the prop faces, relative to the camera. Defaults to TOWARDS_CAMERA.
+         *         last_generated_params: PropParams - What the image was generated from. Defaults to None (not generated yet).
+         */
+        "PropLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /** Image */
+            image: string | null;
+            corners: components["schemas"]["Corners-Output"] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "prop";
+            /** Prop Id */
+            prop_id: string;
+            /** @default towards_camera */
+            orientation: components["schemas"]["Orientation"];
+            last_generated_params: components["schemas"]["PropParams"] | null;
+        };
+        /**
+         * PropOut
+         * @description A prop, with a download URL for each of its reference images.
+         *
+         *     Attributes:
+         *         image_urls: dict[str,str] - Download URL for each image key in the entry.
+         */
+        PropOut: {
+            /** Id */
+            id: string;
             /** Name */
             name: string;
             /**
-             * Created At
-             * Format: date-time
+             * Description
+             * @default
              */
-            created_at: string;
-            status: components["schemas"]["ProjectStatus"];
-            /** Shot Count */
-            shot_count: number | null;
-            /** Error */
-            error: string | null;
+            description: string;
+            /** References */
+            references: {
+                [key: string]: components["schemas"]["Reference"];
+            };
+            /** Image Urls */
+            image_urls: {
+                [key: string]: string;
+            };
         };
         /**
-         * ProjectStatus
-         * @description Lifecycle of a project's render job.
-         *
-         *     Attributes:
-         *         CREATED: str - Represents a project where no story is submitted yet.
-         *         PENDING: str - Represents a project where a story is submitted and a job is queued.
-         *         IN_PROGRESS: str - Represents a project where a worker is breaking down or rendering a story.
-         *         COMPLETE: str - Represents a project where the render job is complete.
-         *         FAILED: str - Represents a project where the render job has failed.
-         * @enum {string}
+         * PropParams
+         * @description Everything a prop layer's image was generated from (besides the prop's own registry entry).
          */
-        ProjectStatus: "created" | "pending" | "in_progress" | "complete" | "failed";
-        /**
-         * Region
-         * @description Represents a single character within a shot.
-         *
-         *     Attributes:
-         *         character_id: str - Unique identifier of the character who "owns" this region.
-         *         position: PositionCell - Position of the region in the 3x3 grid.
-         *         size: SizeInFrame - Size of the region in the frame.
-         *         orientation: Orientation - Orientation of the generated character in the frame.
-         *         action: str - Action being performed by the character -- renders as a pose.
-         */
-        Region: {
-            /** Character Id */
-            character_id: string;
-            position: components["schemas"]["PositionCell"];
-            size: components["schemas"]["SizeInFrame"];
+        PropParams: {
             orientation: components["schemas"]["Orientation"];
-            /** Action */
-            action: string;
+        };
+        /**
+         * Reference
+         * @description One reference image of a character or prop, in one orientation. Every pose of them in that orientation is matched to it.
+         *
+         *     Attributes:
+         *         image: str - S3 key of the image.
+         *         source: Literal["generated", "sketch"] - Whether it was generated, or sketched by the user (used as-is).
+         */
+        Reference: {
+            /** Image */
+            image: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "generated" | "sketch";
+        };
+        /**
+         * Scene
+         * @description A run of shots in one place, at one time of day and in one atmosphere. A change of any of these is a new scene.
+         *
+         *     Attributes:
+         *         id: str - Unique ID of the scene. Defaults to a new random ID.
+         *         name: str - Name shown in the editor. Defaults to "".
+         *         description: str - What happens in the scene. Defaults to "".
+         *         order: int - Position of the scene in the project (0 first). Defaults to 0.
+         *         location_id: str - The location (in the project's registry) every shot in the scene takes place in.
+         *         time_of_day: TimeOfDay - Time of day of the scene. Defaults to DAY.
+         *         atmosphere: Atmosphere - Weather and atmosphere of the scene. Defaults to CLEAR.
+         */
+        Scene: {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /** Location Id */
+            location_id: string;
+            /** @default day */
+            time_of_day: components["schemas"]["TimeOfDay"];
+            /** @default clear */
+            atmosphere: components["schemas"]["Atmosphere"];
+        };
+        /**
+         * SceneIn
+         * @description Request body for creating a scene.
+         *
+         *     Attributes:
+         *         name: str - Name of the scene. Defaults to "".
+         *         description: str - What happens in the scene. Defaults to "".
+         *         location_id: str - The location (in the project's registry) the scene takes place in.
+         *         time_of_day: TimeOfDay - Time of day. Defaults to DAY.
+         *         atmosphere: Atmosphere - Weather and atmosphere. Defaults to CLEAR.
+         */
+        SceneIn: {
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Location Id */
+            location_id: string;
+            /** @default day */
+            time_of_day: components["schemas"]["TimeOfDay"];
+            /** @default clear */
+            atmosphere: components["schemas"]["Atmosphere"];
+        };
+        /**
+         * SceneOrderIn
+         * @description Request body for reordering a project's scenes.
+         *
+         *     Attributes:
+         *         scene_ids: list[str] - Every scene's ID, each exactly once, in the new order.
+         */
+        SceneOrderIn: {
+            /** Scene Ids */
+            scene_ids: string[];
+        };
+        /**
+         * ScenePatch
+         * @description Request body for editing a scene. Only the fields sent are changed.
+         *
+         *     Attributes:
+         *         name: str - New name. Defaults to None (unchanged).
+         *         description: str - New description. Defaults to None (unchanged).
+         *         location_id: str - New location. Defaults to None (unchanged).
+         *         time_of_day: TimeOfDay - New time of day. Defaults to None (unchanged).
+         *         atmosphere: Atmosphere - New atmosphere. Defaults to None (unchanged).
+         */
+        ScenePatch: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Location Id */
+            location_id?: string | null;
+            time_of_day?: components["schemas"]["TimeOfDay"] | null;
+            atmosphere?: components["schemas"]["Atmosphere"] | null;
+        };
+        /**
+         * SceneUse
+         * @description One scene that uses a registry entry, with the shots in it that do.
+         *
+         *     Attributes:
+         *         scene_id: str - Unique ID of the scene.
+         *         name: str - Name of the scene.
+         *         order: int - Position of the scene in the project.
+         *         shots: list[ShotUse] - The scene's shots that use the entry, in order.
+         */
+        SceneUse: {
+            /** Scene Id */
+            scene_id: string;
+            /** Name */
+            name: string;
+            /** Order */
+            order: number;
+            /** Shots */
+            shots: components["schemas"]["ShotUse"][];
+        };
+        /**
+         * ShotIn
+         * @description Request body for creating a shot.
+         *
+         *     Attributes:
+         *         description: str - What happens in the shot. Defaults to "".
+         *         duration_s: float - How long the shot lasts (in seconds). Defaults to 2.
+         *         shot_size: ShotSize - Framing of the shot. Defaults to MEDIUM.
+         *         angle: CameraAngle - Camera angle of the shot. Defaults to EYE_LEVEL.
+         *         details: str - Small visible changes to the location in this shot. Defaults to "".
+         */
+        ShotIn: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Duration S
+             * @default 2
+             */
+            duration_s: number;
+            /** @default medium */
+            shot_size: components["schemas"]["ShotSize"];
+            /** @default eye_level */
+            angle: components["schemas"]["CameraAngle"];
+            /**
+             * Details
+             * @default
+             */
+            details: string;
+        };
+        /**
+         * ShotOrderIn
+         * @description Request body for reordering a scene's shots.
+         *
+         *     Attributes:
+         *         shot_ids: list[str] - Every shot's ID, each exactly once, in the new order.
+         */
+        ShotOrderIn: {
+            /** Shot Ids */
+            shot_ids: string[];
         };
         /**
          * ShotOut
-         * @description One shot, as clients see it.
+         * @description A shot, with a download URL for each of its layers' images.
          *
          *     Attributes:
-         *         shot_id: str - The shot's position in the story, zero-padded (eg:- "0007").
-         *         description: str - What happens in the shot.
-         *         location_id: str - ID of the location the shot takes place in. None for shots broken down before locations existed.
-         *         details: str - What looks different about the location in this shot ("" if nothing does).
-         *         shot_size: ShotSize - Framing of the shot.
-         *         angle: CameraAngle - Camera angle of the shot.
-         *         duration_s: float - How long the shot lasts (in seconds).
-         *         paragraph_index: int - Paragraph of the story the shot came from.
-         *         regions: list[Region] - Where each character is palced.
-         *         rendered: bool - Whether the shot's image is ready.
-         *         needs_review: bool - Whether a human should look at the shot.
-         *         image_key: str - S3 key of the composited image, once rendered.
-         *         image_url: str - Temporary download URL for the composited image, once rendered.
+         *         image_urls: dict[str,str] - Download URL for each image key in the shot.
          */
         ShotOut: {
-            /** Shot Id */
-            shot_id: string;
-            /** Description */
+            /** Id */
+            id: string;
+            /** Scene Id */
+            scene_id: string;
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /**
+             * Description
+             * @default
+             */
             description: string;
-            /** Location Id */
-            location_id: string | null;
-            /** Details */
-            details: string;
-            shot_size: components["schemas"]["ShotSize"];
-            angle: components["schemas"]["CameraAngle"];
-            /** Duration S */
+            /**
+             * Duration S
+             * @default 2
+             */
             duration_s: number;
-            /** Paragraph Index */
-            paragraph_index: number;
-            /** Regions */
-            regions: components["schemas"]["Region"][];
-            /** Rendered */
-            rendered: boolean;
-            /** Needs Review */
-            needs_review: boolean;
-            /** Image Key */
-            image_key: string | null;
-            /** Image Url */
-            image_url: string | null;
+            /** @default medium */
+            shot_size: components["schemas"]["ShotSize"];
+            /** @default eye_level */
+            angle: components["schemas"]["CameraAngle"];
+            /**
+             * Details
+             * @default
+             */
+            details: string;
+            /** Layers */
+            layers: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
+            /**
+             * Version
+             * @default 0
+             */
+            version: number;
+            /** Image Urls */
+            image_urls: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * ShotSave
+         * @description Request body for saving a shot: all its editable fields, plus the version it was loaded at.
+         *
+         *     Attributes:
+         *         layers: list[Layer] - The layer graph, bottom to top.
+         *         version: int - The version the editor loaded.
+         */
+        ShotSave: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Duration S
+             * @default 2
+             */
+            duration_s: number;
+            /** @default medium */
+            shot_size: components["schemas"]["ShotSize"];
+            /** @default eye_level */
+            angle: components["schemas"]["CameraAngle"];
+            /**
+             * Details
+             * @default
+             */
+            details: string;
+            /** Layers */
+            layers: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
+            /** Version */
+            version: number;
         };
         /**
          * ShotSize
@@ -439,43 +1439,299 @@ export interface components {
          */
         ShotSize: "close_up" | "medium" | "wide";
         /**
-         * SizeInFrame
-         * @description Size of the character relative to the frame.
-         * @enum {string}
-         */
-        SizeInFrame: "small" | "medium" | "large";
-        /**
-         * StatusOut
-         * @description A render job's progress.
+         * ShotUse
+         * @description One shot that uses a registry entry.
          *
          *     Attributes:
-         *         status: ProjectStatus - Where the project's render job is.
-         *         total_shots: int - Number of shots, once the breakdown is final.
-         *         rendered_shots: int - Number of shots rendered so far.
-         *         shots_needing_review: int - Number of rendered shots a human should look at.
-         *         error: str - Why the render job failed.
+         *         shot_id: str - Unique ID of the shot.
+         *         order: int - Position of the shot in its scene.
          */
-        StatusOut: {
-            status: components["schemas"]["ProjectStatus"];
-            /** Total Shots */
-            total_shots: number | null;
-            /** Rendered Shots */
-            rendered_shots: number;
-            /** Shots Needing Review */
-            shots_needing_review: number;
-            /** Error */
-            error: string | null;
+        ShotUse: {
+            /** Shot Id */
+            shot_id: string;
+            /** Order */
+            order: number;
         };
         /**
-         * StoryIn
-         * @description Request body for submitting a story.
+         * TextLayer
+         * @description A caption or line of dialogue drawn on the shot. Never generated.
          *
          *     Attributes:
-         *         story: str - The story (in plain text). Paragraphs are separated by blank lines.
+         *         type: Literal["text"] - Layer type.
+         *         text: str - What it says. Defaults to "".
+         *         font: Literal["sans", "serif", "mono", "handwritten"] - Font family; the frontend maps each to a real font. Defaults to "sans".
+         *         size: float - Font size (in frame pixels). Defaults to 32.
+         *         colour: str - Text colour, as a hex code. Defaults to black.
+         *         align: Literal["left", "center", "right"] - Alignment of the text around its position. Defaults to "center".
          */
-        StoryIn: {
-            /** Story */
-            story: string;
+        "TextLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text";
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Font
+             * @default sans
+             * @enum {string}
+             */
+            font: "sans" | "serif" | "mono" | "handwritten";
+            /**
+             * Size
+             * @default 32
+             */
+            size: number;
+            /**
+             * Colour
+             * @default #000000
+             */
+            colour: string;
+            /**
+             * Align
+             * @default center
+             * @enum {string}
+             */
+            align: "left" | "center" | "right";
+        };
+        /**
+         * TextLayer
+         * @description A caption or line of dialogue drawn on the shot. Never generated.
+         *
+         *     Attributes:
+         *         type: Literal["text"] - Layer type.
+         *         text: str - What it says. Defaults to "".
+         *         font: Literal["sans", "serif", "mono", "handwritten"] - Font family; the frontend maps each to a real font. Defaults to "sans".
+         *         size: float - Font size (in frame pixels). Defaults to 32.
+         *         colour: str - Text colour, as a hex code. Defaults to black.
+         *         align: Literal["left", "center", "right"] - Alignment of the text around its position. Defaults to "center".
+         */
+        "TextLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text";
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Font
+             * @default sans
+             * @enum {string}
+             */
+            font: "sans" | "serif" | "mono" | "handwritten";
+            /**
+             * Size
+             * @default 32
+             */
+            size: number;
+            /**
+             * Colour
+             * @default #000000
+             */
+            colour: string;
+            /**
+             * Align
+             * @default center
+             * @enum {string}
+             */
+            align: "left" | "center" | "right";
+        };
+        /**
+         * TimeOfDay
+         * @description Time of day a scene takes place at. Lights the scene's backgrounds together with its atmosphere.
+         * @enum {string}
+         */
+        TimeOfDay: "dawn" | "day" | "dusk" | "night";
+        /**
+         * Transform
+         * @description Where a layer sits in the frame and how it is distorted -- one transform covers moving, resizing, flipping, rotating and skewing.
+         *
+         *     Attributes:
+         *         x: float - Horizontal position of the layer's centre (in frame pixels). Defaults to the centre of the frame.
+         *         y: float - Vertical position of the layer's centre (in frame pixels). Defaults to the centre of the frame.
+         *         scale_x: float - Horizontal scale; negative flips the layer horizontally. Defaults to 1.
+         *         scale_y: float - Vertical scale; negative flips the layer vertically. Defaults to 1.
+         *         rotation: float - Clockwise rotation (in degrees). Defaults to 0.
+         *         skew_x: float - Horizontal skew (in degrees). Defaults to 0.
+         *         skew_y: float - Vertical skew (in degrees). Defaults to 0.
+         */
+        "Transform-Input": {
+            /**
+             * X
+             * @default 512
+             */
+            x: number;
+            /**
+             * Y
+             * @default 512
+             */
+            y: number;
+            /**
+             * Scale X
+             * @default 1
+             */
+            scale_x: number;
+            /**
+             * Scale Y
+             * @default 1
+             */
+            scale_y: number;
+            /**
+             * Rotation
+             * @default 0
+             */
+            rotation: number;
+            /**
+             * Skew X
+             * @default 0
+             */
+            skew_x: number;
+            /**
+             * Skew Y
+             * @default 0
+             */
+            skew_y: number;
+        };
+        /**
+         * Transform
+         * @description Where a layer sits in the frame and how it is distorted -- one transform covers moving, resizing, flipping, rotating and skewing.
+         *
+         *     Attributes:
+         *         x: float - Horizontal position of the layer's centre (in frame pixels). Defaults to the centre of the frame.
+         *         y: float - Vertical position of the layer's centre (in frame pixels). Defaults to the centre of the frame.
+         *         scale_x: float - Horizontal scale; negative flips the layer horizontally. Defaults to 1.
+         *         scale_y: float - Vertical scale; negative flips the layer vertically. Defaults to 1.
+         *         rotation: float - Clockwise rotation (in degrees). Defaults to 0.
+         *         skew_x: float - Horizontal skew (in degrees). Defaults to 0.
+         *         skew_y: float - Vertical skew (in degrees). Defaults to 0.
+         */
+        "Transform-Output": {
+            /**
+             * X
+             * @default 512
+             */
+            x: number;
+            /**
+             * Y
+             * @default 512
+             */
+            y: number;
+            /**
+             * Scale X
+             * @default 1
+             */
+            scale_x: number;
+            /**
+             * Scale Y
+             * @default 1
+             */
+            scale_y: number;
+            /**
+             * Rotation
+             * @default 0
+             */
+            rotation: number;
+            /**
+             * Skew X
+             * @default 0
+             */
+            skew_x: number;
+            /**
+             * Skew Y
+             * @default 0
+             */
+            skew_y: number;
+        };
+        /**
+         * UploadIn
+         * @description Request body for starting an upload.
+         *
+         *     Attributes:
+         *         content_type: str - The image's MIME type: image/png or image/jpeg.
+         */
+        UploadIn: {
+            /**
+             * Content Type
+             * @enum {string}
+             */
+            content_type: "image/png" | "image/jpeg";
+        };
+        /**
+         * UploadOut
+         * @description Everything the browser needs to upload the image, and the key to use once it has.
+         *
+         *     Attributes:
+         *         key: str - S3 key the image will be stored at -- what an image layer's (or sketched reference's) image is set to.
+         *         url: str - URL to POST the form to.
+         *         fields: dict[str,str] - Form fields to send, before the file itself.
+         *         max_bytes: int - Largest file S3 will accept, so the browser can refuse a bigger one without trying.
+         */
+        UploadOut: {
+            /** Key */
+            key: string;
+            /** Url */
+            url: string;
+            /** Fields */
+            fields: {
+                [key: string]: string;
+            };
+            /** Max Bytes */
+            max_bytes: number;
+        };
+        /**
+         * Usage
+         * @description Everywhere a registry entry is used -- what the delete confirmation lists, and what deleting it takes with it.
+         *
+         *     Attributes:
+         *         scenes: list[SceneUse] - Scenes using the entry, in story order. Defaults to [] (unused).
+         */
+        Usage: {
+            /** Scenes */
+            scenes: components["schemas"]["SceneUse"][];
         };
         /** ValidationError */
         ValidationError: {
@@ -485,10 +1741,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -514,7 +1766,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectOut"][];
+                    "application/json": components["schemas"]["Project"][];
                 };
             };
         };
@@ -538,7 +1790,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectOut"];
+                    "application/json": components["schemas"]["Project"];
                 };
             };
             /** @description Validation Error */
@@ -552,7 +1804,7 @@ export interface operations {
             };
         };
     };
-    get_project_projects__project_id__get: {
+    read_project_projects__project_id__get: {
         parameters: {
             query?: never;
             header?: never;
@@ -569,7 +1821,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectOut"];
+                    "application/json": components["schemas"]["Project"];
                 };
             };
             /** @description Validation Error */
@@ -583,7 +1835,36 @@ export interface operations {
             };
         };
     };
-    submit_story_projects__project_id__story_post: {
+    delete_project_projects__project_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_project_projects__project_id__patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -594,40 +1875,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["StoryIn"];
+                "application/json": components["schemas"]["ProjectIn"];
             };
         };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobAccepted"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_status_projects__project_id__status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -635,7 +1885,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StatusOut"];
+                    "application/json": components["schemas"]["Project"];
                 };
             };
             /** @description Validation Error */
@@ -649,70 +1899,7 @@ export interface operations {
             };
         };
     };
-    list_shots_projects__project_id__shots_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ShotOut"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_shot_projects__project_id__shots__shot_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                shot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ShotOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_characters_projects__project_id__characters_get: {
+    list_entries_projects__project_id__characters_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -743,7 +1930,372 @@ export interface operations {
             };
         };
     };
-    list_locations_projects__project_id__locations_get: {
+    create_entry_projects__project_id__characters_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CharacterIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_entry_projects__project_id__characters__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entry_projects__project_id__characters__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_entry_projects__project_id__characters__entry_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CharacterPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    entry_usage_projects__project_id__characters__entry_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_entries_projects__project_id__props_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_entry_projects__project_id__props_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_entry_projects__project_id__props__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entry_projects__project_id__props__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_entry_projects__project_id__props__entry_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    entry_usage_projects__project_id__props__entry_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_entries_projects__project_id__locations_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -761,6 +2313,617 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LocationOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_entry_projects__project_id__locations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_entry_projects__project_id__locations__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entry_projects__project_id__locations__entry_id__delete: {
+        parameters: {
+            query?: {
+                /** @description Location to move this location's scenes to */
+                move_scenes_to?: string | null;
+                /** @description Delete this location's scenes (and their shots) instead */
+                delete_scenes?: boolean;
+            };
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_entry_projects__project_id__locations__entry_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    entry_usage_projects__project_id__locations__entry_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Usage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_scenes_projects__project_id__scenes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Scene"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_scene_projects__project_id__scenes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SceneIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Scene"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_scenes_projects__project_id__scenes_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SceneOrderIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Scene"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_scene_projects__project_id__scenes__scene_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scene_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Scene"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_scene_projects__project_id__scenes__scene_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scene_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_scene_projects__project_id__scenes__scene_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scene_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScenePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Scene"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_shots_projects__project_id__scenes__scene_id__shots_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_shot_projects__project_id__scenes__scene_id__shots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShotIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_shots_projects__project_id__scenes__scene_id__shots_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShotOrderIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_shot_projects__project_id__scenes__scene_id__shots__shot_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                shot_id: string;
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_shot_projects__project_id__scenes__scene_id__shots__shot_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                shot_id: string;
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShotSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_shot_projects__project_id__scenes__scene_id__shots__shot_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                shot_id: string;
+                project_id: string;
+                scene_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_upload_projects__project_id__uploads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadOut"];
                 };
             };
             /** @description Validation Error */

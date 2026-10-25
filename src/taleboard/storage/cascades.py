@@ -6,8 +6,9 @@ Characters and props are used by layers, so deleting one removes every layer sho
 Attributes:
     SAVE_ATTEMPTS: int - How many times a shot is reloaded and edited again if it is saved by someone else in the middle of a deletion.
 """
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from taleboard.schema.base import Model
 from taleboard.schema.layers import CharacterLayer, GroupLayer, Layer, PropLayer
 from taleboard.schema.storyboard import Character, Location, Prop
 from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStore
@@ -15,7 +16,7 @@ from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStor
 SAVE_ATTEMPTS = 3
 
 
-class ShotUse(BaseModel):
+class ShotUse(Model):
     """
     One shot that uses a registry entry.
 
@@ -26,7 +27,7 @@ class ShotUse(BaseModel):
     shot_id: str
     order: int
 
-class SceneUse(BaseModel):
+class SceneUse(Model):
     """
     One scene that uses a registry entry, with the shots in it that do.
 
@@ -41,7 +42,7 @@ class SceneUse(BaseModel):
     order: int
     shots: list[ShotUse] = Field(default_factory=list)
 
-class Usage(BaseModel):
+class Usage(Model):
     """
     Everywhere a registry entry is used -- what the delete confirmation lists, and what deleting it takes with it.
 
