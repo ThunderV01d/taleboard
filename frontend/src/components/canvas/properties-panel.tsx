@@ -2,7 +2,9 @@ import {
   FlipHorizontal2Icon,
   FlipVertical2Icon,
   ImageUpIcon,
+  LoaderCircleIcon,
   RotateCcwIcon,
+  SparklesIcon,
   VectorSquareIcon,
 } from "lucide-react"
 import { useRef } from "react"
@@ -22,6 +24,7 @@ import {
   ORIENTATION_LABELS,
   SHOT_SIZE_LABELS,
 } from "@/lib/labels"
+import type { LayerProgress } from "@/lib/generation"
 import { placedAt, type Layer, type Transform } from "@/lib/layers"
 import type { Character, Prop } from "@/lib/registries"
 import type { ShotFields } from "@/lib/shot-editor"
@@ -40,8 +43,8 @@ export type LayerEdit = (
  * The selected layer's properties (the top half of the right-hand panel): the shared ones -- name, position, size,
  * rotation, skew, flips, opacity -- and those of its type. Visibility is the eye in the layers panel.
  *
- * Generated layers show what they were drawn from (location and facing; character or prop and orientation). Changing
- * those is what will make "Regenerate" light up in Milestone 5; drawing the images themselves is Milestone 4.
+ * Generated layers show what they were drawn from (location and facing; character or prop and orientation), and a
+ * button to draw them -- or draw them again -- with where that's up to.
  */
 export function LayerProperties({
   selected,
@@ -52,6 +55,8 @@ export function LayerProperties({
   onEditLayer,
   onReplaceImage,
   onDistort,
+  progress,
+  onGenerate,
 }: {
   /** The selected layer, when exactly one is selected */
   selected: Layer | null
@@ -63,6 +68,10 @@ export function LayerProperties({
   onReplaceImage: (file: File) => void
   /** Switches to the Distort tool */
   onDistort: () => void
+  /** Where the selected layer stands with generation, if anywhere */
+  progress?: LayerProgress
+  /** Asks for a generated layer to be drawn */
+  onGenerate: (layerId: string) => void
 }) {
   if (selectionCount > 1) {
     return (
@@ -113,6 +122,18 @@ export function LayerProperties({
           onReplaceImage={onReplaceImage}
         />
       </Section>
+
+      {(layer.type === "background" ||
+        layer.type === "character" ||
+        layer.type === "prop") && (
+        <Section title="Picture">
+          <GenerateControls
+            drawn={layer.image !== null}
+            progress={progress}
+            onGenerate={() => onGenerate(layer.id)}
+          />
+        </Section>
+      )}
 
       <Section title="Placement">
         <div className="grid grid-cols-2 gap-2">
@@ -403,7 +424,6 @@ function TypeProperties({
               }
             />
           </Field>
-          <DrawnStatus drawn={layer.image !== null} />
         </>
       )
     case "character":
@@ -438,7 +458,6 @@ function TypeProperties({
               }
             />
           </Field>
-          <DrawnStatus drawn={layer.image !== null} />
         </>
       )
     case "prop":
@@ -460,7 +479,6 @@ function TypeProperties({
               }
             />
           </Field>
-          <DrawnStatus drawn={layer.image !== null} />
         </>
       )
     case "text":
@@ -583,14 +601,43 @@ function ReadOnly({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * Whether a generated layer has its picture yet.
+ * A generated layer's picture: whether it's drawn, being drawn or waiting its turn (or why it couldn't be), and the
+ * button to draw it -- again, if it already is.
  */
-function DrawnStatus({ drawn }: { drawn: boolean }) {
+function GenerateControls({
+  drawn,
+  progress,
+  onGenerate,
+}: {
+  drawn: boolean
+  progress?: LayerProgress
+  onGenerate: () => void
+}) {
+  const busy = progress?.state === "drawing" || progress?.state === "waiting"
   return (
-    <p className="text-xs text-muted-foreground">
-      {drawn
-        ? "Drawn. Regenerating it arrives in a later update."
-        : "Not drawn yet -- the canvas shows a placeholder (or its reference). Generation arrives in a later update."}
-    </p>
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        {progress?.state === "drawing"
+          ? "Drawing it now..."
+          : progress?.state === "waiting"
+            ? "Waiting its turn to be drawn."
+            : drawn
+              ? "Drawn."
+              : "Not drawn yet -- the canvas shows a placeholder (or its reference)."}
+      </p>
+      {progress?.state === "failed" && (
+        <p className="text-xs text-destructive">
+          Couldn&apos;t be drawn: {progress.error}
+        </p>
+      )}
+      <Button variant="outline" size="sm" disabled={busy} onClick={onGenerate}>
+        {busy ? (
+          <LoaderCircleIcon className="animate-spin" />
+        ) : (
+          <SparklesIcon />
+        )}
+        {busy ? "Drawing..." : drawn ? "Draw again" : "Generate"}
+      </Button>
+    </div>
   )
 }

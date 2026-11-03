@@ -9,6 +9,7 @@ from typing import Iterable
 
 from fastapi import Depends, HTTPException, Request, status
 
+from taleboard.jobs.queue import GenerationQueue
 from taleboard.schema.storyboard import Project
 from taleboard.storage.storyboard_store import StoryboardStore
 
@@ -24,6 +25,16 @@ def get_boards() -> StoryboardStore:
         StoryboardStore - Store configured from the environment.
     """
     return StoryboardStore.from_env()
+
+@lru_cache
+def get_generation_queue() -> GenerationQueue:
+    """
+    Connects to the generation job queue once per container.
+
+    Returns:
+        GenerationQueue - Queue configured from the environment.
+    """
+    return GenerationQueue.from_env()
 
 def get_user_id(request: Request) -> str:
     """

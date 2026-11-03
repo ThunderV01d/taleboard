@@ -7,7 +7,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from taleboard.parsing.cast_extraction import CAST_RETRIES, assign_ids, to_domain_character, extract_cast
+from taleboard.parsing.cast_extraction import CAST_RETRIES, assign_ids, extract_cast
 from taleboard.parsing.llm_schemas import LLMCharacterDraft
 
 def test_assign_ids_no_duplicates():
@@ -63,25 +63,6 @@ def test_assign_ids_empty_list():
     Verifies that an empty list of characters produces an empty mapping.
     """
     assert assign_ids([]) == {}
-
-def test_to_domain_character_maps_fields():
-    """
-    Verifies that every field of the draft, plus the appearance reference, carries over to the domain Character.
-    """
-    draft = LLMCharacterDraft(name="Alice", description="A woman with red hair.")
-    character = to_domain_character(draft, appearance_reference="alice_ref.png")
-    assert character.name == "Alice"
-    assert character.description == "A woman with red hair."
-    assert character.appearance_reference == "alice_ref.png"
-
-
-def test_to_domain_character_defaults_appearance_reference_to_none():
-    """
-    Verifies that the appearance reference defaults to None when none is given.
-    """
-    draft = LLMCharacterDraft(name="Bob", description="A man with a beard.")
-    character = to_domain_character(draft)
-    assert character.appearance_reference is None
 
 @pytest.mark.parametrize("story", ["", "   \n\n  \n"])
 def test_extract_cast_rejects_empty_story_before_calling_the_llm(story):

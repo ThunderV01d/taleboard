@@ -1,4 +1,9 @@
-import { EllipsisIcon, PlusIcon, Trash2Icon } from "lucide-react"
+import {
+  EllipsisIcon,
+  LoaderCircleIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react"
 
 import { SortableItem, SortableList } from "@/components/sortable"
 import { Button } from "@/components/ui/button"
@@ -23,6 +28,7 @@ export function ShotDeck({
   onNew,
   onReorder,
   onDelete,
+  drawing,
 }: {
   shots: Shot[]
   selectedId: string | null
@@ -30,6 +36,8 @@ export function ShotDeck({
   onNew: () => void
   onReorder: (shotIds: string[]) => void
   onDelete: (shot: Shot) => void
+  /** IDs of the shots with a layer waiting or being drawn */
+  drawing: Set<string>
 }) {
   return (
     // Padded, so a card's highlight (drawn just outside it) isn't clipped by the scrolling row
@@ -69,6 +77,12 @@ export function ShotDeck({
                     <span className="line-clamp-2 text-xs text-muted-foreground">
                       {shot.description || "No description"}
                     </span>
+                    {drawing.has(shot.id) && (
+                      <span className="flex items-center gap-1 text-xs text-primary">
+                        <LoaderCircleIcon className="size-3 animate-spin" />
+                        Drawing
+                      </span>
+                    )}
                   </span>
                 </button>
                 <DropdownMenu>

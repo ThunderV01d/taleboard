@@ -1,6 +1,6 @@
 # TaleBoard frontend
 
-The TaleBoard editor. Sign in, make a project, fill its registries (characters, locations and props), then lay out each scene's shots on a canvas: a layer graph of a background, characters, props, text and uploaded images, each one moved, resized, rotated, skewed, flipped, grouped, reordered or perspective-warped by hand. Shots save themselves as you work, and undo/redo covers every edit.
+The TaleBoard editor. Sign in and make a project -- blank, or from a story, which is broken down into its characters, props, places, scenes and shots for you (and, by default, drawn). Fill in or correct its registries (characters, locations and props), then lay out each scene's shots on a canvas: a layer graph of a background, characters, props, text and uploaded images, each one moved, resized, rotated, skewed, flipped, grouped, reordered or perspective-warped by hand. Generate a layer, a shot or the whole project, and watch each shot fill in as its layers are drawn. Shots save themselves as you work, and undo/redo covers every edit.
 
 Built with React + Vite + TypeScript, Tailwind and shadcn/ui. Server state is handled by TanStack Query, and the API client is typed from the backend's own OpenAPI schema via `openapi-fetch`. Sign-in uses Amazon Cognito through Amplify's Auth library; the canvas is Konva (`react-konva`), and drag-and-drop lists use dnd-kit.
 
@@ -22,7 +22,7 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build      # type-checks, then builds to dist/
 npm run lint
-npm test           # unit tests (vitest): the layer graph, the editor's state and the warp maths
+npm test           # unit tests (vitest): the layer graph, the editor's state, the warp maths and following jobs
 ```
 
 Google sign-in sends the browser back to `/auth/callback`, so the origin you run on must be one of the app client's callback URLs. These come from `corsOrigin` in `infra/cdk.json` (see Deploying below); `http://localhost:5173` is already in it.
@@ -47,7 +47,7 @@ The backend's compositor (which turns a shot's layers into one image) must draw 
 
 - Shots are a 1024 x 1024 frame. A layer's transform places its **centre**, in its parent's space: the frame at the top level, or the group's centre (its pivot) inside a group.
 - Transforms apply as translate, rotate, skew, scale (Konva's order); rotation and skew are stored in degrees.
-- A background is stretched to fill the frame; any other picture is drawn at its image's own size, times its scale.
+- A background is stretched to fill the frame; any other picture is drawn at its image's own size, times its scale. Generated images are fitted to a standard size -- characters 1024 pixels tall, props 512 on their longer side -- and a layer not drawn yet shows a placeholder of about the same size, so its scale means the same before and after it's drawn.
 - A picture's `corners` (if any) warp it before its transform: each is a fraction of its own width and height, mapped by a perspective transform (homography) from its rectangle (see `src/lib/warp.ts`).
 
 ## Structure
@@ -62,20 +62,22 @@ src/
 │   ├── projects.ts, scenes.ts, shots.ts, registries.ts
 │   │                          # queries and changes for each resource (reorders show at once, before the API answers)
 │   ├── uploads.ts             # presigned browser uploads straight to S3
+│   ├── generation.ts          # generating and importing: previews, jobs, following them as layers are drawn
 │   ├── layers.ts              # the layer graph: building, walking and editing the tree; transform maths
 │   ├── shot-editor.ts         # the canvas editor's state: draft, saved baseline, undo/redo, selection
 │   ├── warp.ts                # perspective warp: corner checks, the homography, drawing as a triangle mesh
-│   ├── *.test.ts              # unit tests for the three above
+│   ├── *.test.ts              # unit tests for the three above, and for following jobs
 │   └── labels.ts              # display names for every enum
 ├── pages/
 │   ├── landing.tsx, login.tsx, sign-up.tsx, auth-callback.tsx, not-found.tsx
-│   ├── projects.tsx           # your projects
-│   ├── project-editor.tsx     # one project: scene picker, the open shot's editor, the shot deck
+│   ├── projects.tsx           # your projects, and starting a new one
+│   ├── project-editor.tsx     # one project: scene picker, the open shot's editor, the shot deck, generation and import progress
 │   └── registry.tsx           # a project's characters, locations or props
 ├── components/
 │   ├── app-header.tsx         # logo, the open project's name, account
 │   ├── auth-provider.tsx, auth-card.tsx, google-button.tsx, route-guards.tsx
-│   ├── editor/                # scene picker and dialog, shot deck and dialog
+│   ├── new-project-dialog.tsx # a blank project, or one from a story
+│   ├── editor/                # scene picker and dialog, shot deck and dialog, the Generate everything dialog
 │   ├── canvas/
 │   │   ├── shot-editor.tsx    # one shot: tools + layers + shot details | canvas | layer details; autosave and conflicts
 │   │   ├── shot-canvas.tsx    # the Konva frame: layers, selection, transform box, Distort's corner handles

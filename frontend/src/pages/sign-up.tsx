@@ -132,7 +132,7 @@ export function SignUpPage() {
   return (
     <AuthCard
       title="Create an account"
-      description="Start turning stories into storyboards."
+      description="To stay within budget, Taleboard requests all users to be signed-in before being able to edit or create any projects."
       footer={
         <span>
           Already have an account?{" "}

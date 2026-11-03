@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from taleboard.api.deps import get_boards, get_project, image_urls, not_found
-from taleboard.schema.storyboard import Character, Location, Project, Prop
+from taleboard.schema.enums import Facing, Setting
+from taleboard.schema.storyboard import Character, Location, Project, Prop, View
 from taleboard.storage.cascades import Usage, delete_entry_and_uses, delete_location, find_usage
 from taleboard.storage.storyboard_store import StoryboardStore
 
@@ -37,6 +38,17 @@ class CharacterIn(EntryIn):
     """
     aliases: list[str] = Field(default_factory=list)
 
+class LocationIn(EntryIn):
+    """
+    Request body for creating a location.
+
+    Attributes:
+        setting: Setting - Whether the place is indoors or out. Defaults to INT.
+        views: dict[Facing,str] - What's on each side of the place. Defaults to {}.
+    """
+    setting: Setting = Setting.INT
+    views: dict[Facing, View] = Field(default_factory=dict)
+
 class EntryPatch(BaseModel):
     """
     Request body for editing a prop or location. Only the fields sent are changed; the ID never is, even if the name is.
@@ -56,6 +68,17 @@ class CharacterPatch(EntryPatch):
         aliases: list[str] - New aliases (replacing the old ones). Defaults to None (unchanged).
     """
     aliases: list[str] | None = None
+
+class LocationPatch(EntryPatch):
+    """
+    Request body for editing a location.
+
+    Attributes:
+        setting: Setting - New setting. Defaults to None (unchanged).
+        views: dict[Facing,str] - New views (replacing the old ones). Defaults to None (unchanged).
+    """
+    setting: Setting | None = None
+    views: dict[Facing, View] | None = None
 
 class CharacterOut(Character):
     """
@@ -184,4 +207,4 @@ def registry_router(path: str, model: type, in_model: type[EntryIn], patch_model
 
 characters = registry_router("characters", Character, CharacterIn, CharacterPatch, CharacterOut)
 props = registry_router("props", Prop, EntryIn, EntryPatch, PropOut)
-locations = registry_router("locations", Location, EntryIn, EntryPatch, LocationOut)
+locations = registry_router("locations", Location, LocationIn, LocationPatch, LocationOut)

@@ -316,3 +316,42 @@ def test_deleting_an_unknown_location_is_a_404(client, pid):
     Verifies that deleting a location that doesn't exist is a 404, once a choice has been made.
     """
     assert client.delete(f"/projects/{pid}/locations/nowhere", params={"delete_scenes": "true"}).status_code == 404
+
+
+def test_a_location_is_created_and_edited_with_its_setting_and_views(client, pid):
+    """
+    Verifies that a location takes a setting and a view per side when created, that editing views replaces them all, and that editing anything else leaves both alone.
+    """
+    created = _add(client, pid, "locations", "Quay", setting="exterior", views={"north": "the harbour", "south": "the cottages"})
+    assert (created["setting"], created["views"]) == ("exterior", {"north": "the harbour", "south": "the cottages"})
+    assert _add(client, pid, "locations", "Office")["setting"] == "interior"
+
+    renamed = client.patch(f"/projects/{pid}/locations/quay", json={"name": "Harbour quay"}).json()
+    viewed = client.patch(f"/projects/{pid}/locations/quay", json={"views": {"east": "the lighthouse"}}).json()
+    indoors = client.patch(f"/projects/{pid}/locations/quay", json={"setting": "interior"}).json()
+
+    assert (renamed["setting"], renamed["views"]) == ("exterior", {"north": "the harbour", "south": "the cottages"})
+    assert viewed["views"] == {"east": "the lighthouse"}
+    assert (indoors["setting"], indoors["views"]) == ("interior", {"east": "the lighthouse"})
+
+
+@pytest.mark.parametrize("body", [{"setting": "underground"}, {"views": {"up": "the sky"}}, {"views": {"north": "x" * 201}}])
+def test_an_invalid_setting_or_view_is_a_422(client, pid, body):
+    """
+    Verifies that only the two settings and the four compass facings are taken, and that a view keeps its cap.
+
+    Arguments:
+        body: dict - A bad field.
+    """
+    assert client.post(f"/projects/{pid}/locations", json={"name": "Office", **body}).status_code == 422
+    _add(client, pid, "locations", "Office")
+    assert client.patch(f"/projects/{pid}/locations/office", json=body).status_code == 422
+
+
+def test_characters_and_props_have_no_setting_or_views(client, pid):
+    """
+    Verifies that setting and views belong to locations only.
+    """
+    prop = _add(client, pid, "props", "Lamp", setting="exterior", views={"north": "x"})
+
+    assert "setting" not in prop and "views" not in prop

@@ -27,19 +27,30 @@ export function newId(): string {
 }
 
 /**
- * A transform that leaves a layer unmoved, unscaled and unrotated -- centred on (x, y).
+ * A transform that leaves a layer unrotated and unskewed -- centred on (x, y), at the given scale (default 1).
  */
-export function placedAt(x: number, y: number): Transform {
-  return { x, y, scale_x: 1, scale_y: 1, rotation: 0, skew_x: 0, skew_y: 0 }
+export function placedAt(x: number, y: number, scale = 1): Transform {
+  return { x, y, scale_x: scale, scale_y: scale, rotation: 0, skew_x: 0, skew_y: 0 }
 }
 
 const CENTRE = FRAME_SIZE / 2
 
-function base(name: string, x = CENTRE, y = CENTRE) {
+/**
+ * New character and prop layers' scales. Their images are fitted to a standard size (characters 1024 pixels tall,
+ * props 512 on their longer side), so these are the same as a story import's medium-sized figure in the middle row:
+ * a character 45% of the frame tall (times 0.85 for the row), a prop 15%.
+ */
+const CHARACTER_SCALE = 0.45 * 0.85
+const PROP_SCALE = (0.15 * 0.85 * FRAME_SIZE) / 512
+
+/** Where the middle row's feet stand */
+const FLOOR_Y = FRAME_SIZE * 0.86
+
+function base(name: string, x = CENTRE, y = CENTRE, scale = 1) {
   return {
     id: newId(),
     name,
-    transform: placedAt(x, y),
+    transform: placedAt(x, y, scale),
     opacity: 1,
     visible: true,
   }
@@ -85,10 +96,10 @@ export function newImageLayer(image: string | null, name = "Image"): Layer {
 export function newCharacterLayer(
   character: Character,
   x = CENTRE,
-  y = FRAME_SIZE * 0.6
+  y = FLOOR_Y - (CHARACTER_SCALE * FRAME_SIZE) / 2
 ): Layer {
   return {
-    ...base(character.name, x, y),
+    ...base(character.name, x, y, CHARACTER_SCALE),
     type: "character",
     character_id: character.id,
     orientation: "towards_camera",
@@ -101,7 +112,7 @@ export function newCharacterLayer(
 
 export function newPropLayer(prop: Prop): Layer {
   return {
-    ...base(prop.name, CENTRE, FRAME_SIZE * 0.7),
+    ...base(prop.name, CENTRE, FLOOR_Y - (PROP_SCALE * 512) / 2, PROP_SCALE),
     type: "prop",
     prop_id: prop.id,
     orientation: "towards_camera",
@@ -112,8 +123,8 @@ export function newPropLayer(prop: Prop): Layer {
 }
 
 /**
- * Character layers for a new shot, spread evenly across the frame, a little below the middle. Not generated yet --
- * they have no image until the character's pose is drawn (Milestone 4).
+ * Character layers for a new shot, spread evenly across the frame, standing on the middle row's floor. Not generated
+ * yet -- they have no image until the character's pose is drawn.
  */
 export function characterLayers(characters: Character[]): Layer[] {
   return characters.map((character, i) =>

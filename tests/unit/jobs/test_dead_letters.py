@@ -4,9 +4,29 @@ Unit tests for dead-lettered job recovery.
 Runs against moto's fakes of DynamoDB, S3 and SQS (see tests/unit/conftest.py).
 """
 import json
+from datetime import datetime, timezone
 
 from taleboard.jobs import dead_letters
-from taleboard.schema.enums import ProjectStatus
+from taleboard.schema.generation import GenerationJob, GenerationTask, JobStatus, TaskStatus
+from taleboard.storage.storyboard_store import StoryboardStore
+
+
+def _generation_job(status: JobStatus) -> tuple[StoryboardStore, str, str]:
+    """
+    Creates a project with a generation job in the given state, one of whose tasks is done.
+
+    Arguments:
+        status: JobStatus - The job's status.
+
+    Returns:
+        tuple[StoryboardStore,str,str] - The store, the project's ID and the job's ID.
+    """
+    boards = StoryboardStore.from_env()
+    pid = boards.create_project("Lighthouse", "mara-user").project_id
+    job = GenerationJob(created_at=datetime.now(timezone.utc), tasks=[GenerationTask(scene_id="s", shot_id="sh", layer_id="l", status=TaskStatus.DONE)])
+    boards.create_job(pid, job)
+    boards.set_job_status(pid, job.id, status)
+    return boards, pid, job.id
 
 
 def _event(project_id: str, job_id: str) -> dict:
@@ -15,70 +35,41 @@ def _event(project_id: str, job_id: str) -> dict:
 
     Arguments:
         project_id: str - Unique project ID.
-        job_id: str - Unique render job ID.
+        job_id: str - Unique generation job ID.
 
     Returns:
         dict - SQS event holding one dead-lettered message.
     """
-    return {"Records": [{"body": json.dumps({"project_id": project_id, "job_id": job_id})}]}
+    return {"Records": [{"body": json.dumps({"kind": "generate", "project_id": project_id, "job_id": job_id})}]}
 
 
-def _job_in_progress(store) -> str:
+def test_a_dead_lettered_job_is_marked_failed_and_keeps_its_finished_tasks(aws):
     """
-    Creates a project whose job "job-1" is mid-render.
+    Verifies that a generation job stuck running is marked failed (so the editor stops waiting on it), with its done tasks kept.
 
     Arguments:
-        store: ProjectStore - Store to create the project in.
-
-    Returns:
-        str - The project's ID.
+        aws: None - The shared fakes.
     """
-    project = store.create_project("Lighthouse")
-    store.submit_story(project.project_id, "job-1", "Alice waved.")
-    store.claim_job(project.project_id, "job-1")
-    return project.project_id
+    boards, pid, job_id = _generation_job(JobStatus.RUNNING)
+
+    dead_letters.handler(_event(pid, job_id), None)
+
+    job = boards.get_job(pid, job_id)
+    assert (job.status, job.error) == (JobStatus.FAILED, dead_letters.DEAD_LETTER_ERROR)
+    assert job.tasks[0].status == TaskStatus.DONE
 
 
-def test_a_dead_lettered_job_in_progress_is_marked_failed(store):
+def test_a_dead_lettered_job_that_finished_or_was_deleted_is_left_alone(aws):
     """
-    Verifies that a job stuck in progress is marked failed, so the user can resubmit.
+    Verifies that a job that completed anyway stays complete, and one deleted with its project is ignored.
 
     Arguments:
-        store: ProjectStore - Fake-backed store.
+        aws: None - The shared fakes.
     """
-    pid = _job_in_progress(store)
+    boards, pid, job_id = _generation_job(JobStatus.COMPLETE)
 
-    dead_letters.handler(_event(pid, "job-1"), None)
+    dead_letters.handler(_event(pid, job_id), None)
+    dead_letters.handler(_event(pid, "deleted-job"), None)
 
-    project = store.get_project(pid)
-    assert project.status == ProjectStatus.FAILED
-    assert project.error == dead_letters.DEAD_LETTER_ERROR
-
-
-def test_a_dead_lettered_duplicate_of_a_completed_job_changes_nothing(store):
-    """
-    Verifies that a dead-lettered duplicate never turns a completed job into a failed one.
-
-    Arguments:
-        store: ProjectStore - Fake-backed store.
-    """
-    pid = _job_in_progress(store)
-    store.finish_job(pid, "job-1", ProjectStatus.COMPLETE)
-
-    dead_letters.handler(_event(pid, "job-1"), None)
-
-    assert store.get_project(pid).status == ProjectStatus.COMPLETE
-
-
-def test_a_dead_lettered_message_for_a_superseded_job_changes_nothing(store):
-    """
-    Verifies that a dead-lettered message for an old job never touches the project's current job.
-
-    Arguments:
-        store: ProjectStore - Fake-backed store.
-    """
-    pid = _job_in_progress(store)
-
-    dead_letters.handler(_event(pid, "some-older-job"), None)
-
-    assert store.get_project(pid).status == ProjectStatus.IN_PROGRESS
+    assert boards.get_job(pid, job_id).status == JobStatus.COMPLETE
+    assert len(boards.list_jobs(pid)) == 1

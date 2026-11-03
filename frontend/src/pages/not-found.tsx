@@ -8,7 +8,7 @@ export function NotFoundPage() {
     <section className="space-y-2">
       <h1 className="text-2xl font-semibold">Page not found</h1>
       <p className="text-muted-foreground">
-        There's nothing here.{" "}
+        Oops! There's nothing here.{" "}
         <Link to="/" className="underline">
           Back to the start
         </Link>

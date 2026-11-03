@@ -1,6 +1,8 @@
 """
 Unit tests for shot_breakdown, plus the alias-related parts of prompts and llm_schemas.
 
+Covers retries and fallbacks, what the prompt lists (cast, props, the scene and its location's views), props in shots, tidying up what the model returns, and the cast-name checks.
+
 Uses fake LLM call functions, so no LLM calls are made.
 
 Attributes:
@@ -10,8 +12,9 @@ Attributes:
 import json
 
 from taleboard.parsing.cast_extraction import assign_ids
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, build_shot_draft_model
-from taleboard.parsing.shot_breakdown import find_cast_mentions, get_shots_for_paragraph, ShotResult, to_domain_shot
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMPropDraft, LLMSceneDraft, build_shot_draft_model
+from taleboard.parsing.prompts import build_shot_breakdown_prompt
+from taleboard.parsing.shot_breakdown import find_cast_mentions, get_shots_for_paragraph
 
 
 def _make_cast() -> dict[str, LLMCharacterDraft]:
@@ -28,17 +31,32 @@ def _make_cast() -> dict[str, LLMCharacterDraft]:
     return assign_ids(drafts)
 
 
-def _make_locations() -> dict[str, LLMLocationDraft]:
-    """
-    Builds two locations (a street and a harbour).
+_VIEWS = {"north": "the way ahead", "east": "a row of houses", "south": "the way back", "west": "a low wall"}
 
-    Returns:
-        dict[str,LLMLocationDraft] - Mapping of location IDs ("street", "harbour") to location drafts.
+
+def _street() -> LLMLocationDraft:
+    return LLMLocationDraft(name="Street", setting="exterior", description="a quiet street corner with a lamppost", views=_VIEWS)
+
+
+def _scene() -> LLMSceneDraft:
+    return LLMSceneDraft(first_paragraph=0, location_id="street", time_of_day="dusk", atmosphere="rainy", name="On the street", description="Alice meets Bob.")
+
+
+def _make_props() -> dict[str, LLMPropDraft]:
+    return {"umbrella": LLMPropDraft(name="Umbrella", description="a black folding umbrella"), "letter": LLMPropDraft(name="Letter", description="a folded letter")}
+
+
+def _with_props(*props: dict) -> str:
     """
-    return {
-        "street": LLMLocationDraft(name="Street", description="a quiet street corner with a lamppost"),
-        "harbour": LLMLocationDraft(name="Harbour", description="a stone harbour wall with moored boats"),
-    }
+    VALID_SHOT_RESPONSE (Alice alone), with the given props in its shot.
+    """
+    response = json.loads(VALID_SHOT_RESPONSE)
+    response["shots"][0]["props"] = list(props)
+    return json.dumps(response)
+
+
+def _prop(prop_id: str, held_by: str = "", position: str = "mid_right") -> dict:
+    return {"prop_id": prop_id, "position": position, "size": "small", "orientation": "towards_camera", "held_by": held_by}
 
 
 # Character ID "carol" is not in the cast built by _make_cast(), so this fails validation against the cast-constrained schema
@@ -46,7 +64,7 @@ INVALID_SHOT_RESPONSE = json.dumps({
     "shots": [
         {
             "description": "Alice waves at a stranger.",
-            "location_id": "street",
+            "facing": "north",
             "details": "",
             "shot_size": "medium",
             "angle": "eye_level",
@@ -68,7 +86,7 @@ VALID_SHOT_RESPONSE = json.dumps({
     "shots": [
         {
             "description": "Alice waves at Bob.",
-            "location_id": "street",
+            "facing": "north",
             "details": "",
             "shot_size": "medium",
             "angle": "eye_level",
@@ -153,33 +171,6 @@ def test_get_shots_for_paragraph_falls_back_after_max_retries():
     assert results[0].needs_review is True
     assert results[0].shot.regions == []
 
-def test_get_shots_for_paragraph_fallback_shot_is_placed_in_a_known_location():
-    """
-    Verifies that the fallback shot is placed in the previous shot's location -- or, for the first shot, the story's first location -- as every shot needs one to render a background.
-    """
-    cast = _make_cast()
-
-    def fake_call_llm(prompt: str) -> str:
-        """
-        Always returns an invalid response.
-
-        Arguments:
-            prompt: str - Prompt sent to the fake LLM.
-
-        Returns:
-            str - Invalid shot breakdown response (JSON).
-        """
-        return INVALID_SHOT_RESPONSE
-
-    locations = _make_locations()
-    previous_shot = build_shot_draft_model(["alice", "bob"]).model_validate({**json.loads(VALID_SHOT_RESPONSE)["shots"][0], "location_id": "harbour"})
-
-    first_results = get_shots_for_paragraph(paragraph="Alice waves.", cast=cast, previous_shot=None, call_llm=fake_call_llm, locations=locations)
-    later_results = get_shots_for_paragraph(paragraph="Alice waves.", cast=cast, previous_shot=previous_shot, call_llm=fake_call_llm, locations=locations)
-
-    assert first_results[0].shot.location_id == "street"
-    assert later_results[0].shot.location_id == "harbour"
-
 def test_get_shots_for_paragraph_handles_unparseable_response():
     """
     Verifies that a response that isn't JSON at all ends in a flagged fallback shot, not a crash.
@@ -208,69 +199,12 @@ def test_get_shots_for_paragraph_handles_unparseable_response():
     assert len(results) == 1
     assert results[0].needs_review is True
 
-def test_to_domain_shot_maps_fields():
-    """
-    Verifies that every field of a validated shot draft carries over to the domain Shot, along with the paragraph index.
-    """
-    ShotModel = build_shot_draft_model(["alice", "bob"])
-    draft = ShotModel.model_validate({
-        "description": "Alice waves at Bob.",
-        "location_id": "street",
-        "details": "",
-        "shot_size": "medium",
-        "angle": "eye_level",
-        "duration_s": 2.0,
-        "regions": [
-            {
-                "character_id": "alice",
-                "position": "mid_left",
-                "size": "medium",
-                "orientation": "towards_camera",
-                "action": "waving",
-            }
-        ],
-    })
-    result = ShotResult(shot=draft, needs_review=False)
-
-    shot = to_domain_shot(result, paragraph_index=3)
-
-    assert shot.description == "Alice waves at Bob."
-    assert shot.location_id == "street"
-    assert shot.details == ""
-    assert shot.paragraph_index == 3
-    assert shot.needs_review is False
-    assert len(shot.regions) == 1
-    assert shot.regions[0].character_id == "alice"
-    assert shot.regions[0].action == "waving"
-
-def test_to_domain_shot_carries_needs_review_flag():
-    """
-    Verifies that the review flag on a ShotResult carries over to the domain Shot.
-    """
-    ShotModel = build_shot_draft_model(["alice"])
-    draft = ShotModel.model_validate({
-        "description": "fallback",
-        "location_id": "street",
-        "details": "",
-        "shot_size": "medium",
-        "angle": "eye_level",
-        "duration_s": 2.0,
-        "regions": [],
-    })
-    result = ShotResult(shot=draft, needs_review=True)
-
-    shot = to_domain_shot(result, paragraph_index=0)
-
-    assert shot.needs_review is True
-    assert shot.regions == []
-
 def test_breakdown_prompt_lists_each_cast_members_aliases():
     """
     Verifies that the shot breakdown prompt lists each cast member's aliases next to their ID.
 
     This is what lets the LLM resolve a reference like "the harbourmaster" to the right character.
     """
-    from taleboard.parsing.prompts import build_shot_breakdown_prompt
     cast = {"elias_brandt": LLMCharacterDraft(name="Elias Brandt", description="A bearded old man.",
                                               aliases=["Brandt", "the harbourmaster"])}
 
@@ -278,48 +212,6 @@ def test_breakdown_prompt_lists_each_cast_members_aliases():
 
     assert "id: elias_brandt" in prompt
     assert "also called: Brandt, the harbourmaster" in prompt
-
-
-def test_breakdown_prompt_lists_each_location_with_its_description():
-    """
-    Verifies that the shot breakdown prompt lists each location's ID and description, so the LLM can pick one by ID.
-    """
-    from taleboard.parsing.prompts import build_shot_breakdown_prompt
-
-    prompt = build_shot_breakdown_prompt("Alice waves.", _make_cast(), None, _make_locations())
-
-    assert "id: street, name: Street, description: a quiet street corner with a lamppost" in prompt
-    assert "id: harbour" in prompt
-
-
-def test_a_location_id_outside_the_known_locations_is_retried():
-    """
-    Verifies that a shot placed in a location that isn't in the list fails validation and is sent back for a retry.
-    """
-    unknown = json.loads(VALID_SHOT_RESPONSE)
-    unknown["shots"][0]["location_id"] = "lighthouse"
-    responses = [json.dumps(unknown), VALID_SHOT_RESPONSE]
-    calls: list[str] = []
-
-    def fake_call_llm(prompt: str) -> str:
-        """
-        Records the prompt and returns a shot in an unknown location, then a valid one.
-
-        Arguments:
-            prompt: str - Prompt sent to the fake LLM.
-
-        Returns:
-            str - Next canned response (JSON).
-        """
-        calls.append(prompt)
-        return responses[len(calls) - 1]
-
-    results = get_shots_for_paragraph(paragraph="Alice waves.", cast=_make_cast(), previous_shot=None, call_llm=fake_call_llm, locations=_make_locations())
-
-    assert len(calls) == 2
-    assert "lighthouse" in calls[1]
-    assert results[0].shot.location_id == "street"
-    assert results[0].needs_review is False
 
 
 def test_aliases_are_required_for_the_llm_but_optional_in_python():
@@ -436,3 +328,84 @@ def test_a_character_given_two_regions_keeps_only_the_first_without_a_retry():
     assert len(calls) == 1
     assert [(r.character_id, r.action) for r in results[0].shot.regions] == [("alice", "waving")]
     assert results[0].needs_review is False
+
+
+def test_the_prompt_lists_the_props_the_scene_and_what_each_facing_shows():
+    """
+    Verifies that the shot prompt gives the model the props by ID, the scene with its time and weather, and the location's view for every facing.
+    """
+    prompt = build_shot_breakdown_prompt("Alice waves.", _make_cast(), None, _make_props(), _scene(), _street())
+
+    assert "id: umbrella, name: Umbrella, description: a black folding umbrella" in prompt
+    assert "SCENE: On the street -- Alice meets Bob. (dusk, rainy)" in prompt
+    assert "LOCATION: Street (exterior) -- a quiet street corner with a lamppost" in prompt
+    for side, view in _VIEWS.items():
+        assert f"- facing {side}: {view}" in prompt
+    assert "first shot of the scene" in prompt
+
+
+def test_a_story_without_props_says_so():
+    """
+    Verifies that the prompt lists no props as "none".
+    """
+    assert "PROPS:\nnone" in build_shot_breakdown_prompt("Alice waves.", _make_cast(), None)
+
+
+def test_a_shot_keeps_its_facing_and_props_held_or_standing():
+    """
+    Verifies that a shot's facing and props come through: one held by a character in the shot, one standing on its own.
+    """
+    response = json.loads(_with_props(_prop("umbrella", held_by="alice"), _prop("letter")))
+    response["shots"][0]["facing"] = "east"
+
+    [result] = get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: json.dumps(response), props=_make_props())
+
+    assert result.shot.facing == "east"
+    assert [(p.prop_id, p.held_by) for p in result.shot.props] == [("umbrella", "alice"), ("letter", "")]
+
+
+def test_unknown_and_duplicate_props_are_dropped_and_a_holder_not_in_the_shot_puts_theirs_down():
+    """
+    Verifies the tidy-up, with no retry or review flag: a prop that isn't the story's is dropped, a second entry for a prop is dropped, and a prop held by someone with no region in the shot (in the cast or not) stands on its own instead.
+    """
+    calls: list[str] = []
+    response = _with_props(_prop("umbrella", held_by="bob"), _prop("umbrella", held_by="alice"), _prop("teapot"))
+
+    [result] = get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: calls.append(prompt) or response, props=_make_props())
+
+    assert len(calls) == 1 and result.needs_review is False
+    assert [(p.prop_id, p.held_by) for p in result.shot.props] == [("umbrella", "")]
+
+
+def test_a_story_without_props_drops_any_the_model_invents():
+    """
+    Verifies that a shot listing props in a story with none keeps its characters and loses the props, without a retry.
+    """
+    calls: list[str] = []
+
+    [result] = get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: calls.append(prompt) or _with_props(_prop("umbrella")))
+
+    assert len(calls) == 1
+    assert result.shot.props == [] and result.shot.regions[0].character_id == "alice"
+
+
+def test_a_fallback_shot_faces_where_the_scene_last_did():
+    """
+    Verifies that a shot that never validates falls back to the scene's last facing (north for its first shot), with no characters or props.
+    """
+    previous = build_shot_draft_model(["alice", "bob"]).model_validate({**json.loads(VALID_SHOT_RESPONSE)["shots"][0], "facing": "south"})
+
+    [first] = get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: INVALID_SHOT_RESPONSE)
+    [later] = get_shots_for_paragraph("Alice waves.", _make_cast(), previous, lambda prompt: INVALID_SHOT_RESPONSE)
+
+    assert (first.shot.facing, later.shot.facing) == ("north", "south")
+    assert later.needs_review and later.shot.regions == [] and later.shot.props == []
+
+
+def test_props_are_required_for_the_llm_but_optional_in_python():
+    """
+    Verifies that 'props' is a required field of a shot in the schema sent to the LLM, while still defaulting to [] in Python.
+    """
+    model = build_shot_draft_model(["alice"], ["umbrella"])
+    assert "props" in model.model_json_schema()["required"]
+    assert model.model_validate({**json.loads(VALID_SHOT_RESPONSE)["shots"][0]}).props == []

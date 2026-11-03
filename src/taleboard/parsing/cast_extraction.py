@@ -13,13 +13,12 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from taleboard.parsing.bedrock_caller import CallLLM
-from taleboard.schema.models import Character
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput, LLMLocationDraft
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMCastOutput, LLMLocationDraft, LLMPropDraft
 from taleboard.parsing.prompts import build_cast_extraction_prompt
 
 CAST_RETRIES = 1
 
-Draft = TypeVar("Draft", LLMCharacterDraft, LLMLocationDraft)
+Draft = TypeVar("Draft", LLMCharacterDraft, LLMLocationDraft, LLMPropDraft)
 
 def slugify(name: str) -> str:
     """
@@ -117,25 +116,4 @@ def _build_cast_retry_prompt(response_text: str, error: ValidationError) -> str:
         "The cast list you sent failed validation. Fix it and return the whole list again, in the same JSON shape, "
         "under a \"characters\" key. Keep every character; shorten any description that is too long, keeping only how "
         f"the character looks.\n\nCast you sent:\n{response_text}\n\nError:\n{error}"
-    )
-
-
-def to_domain_character(draft: LLMCharacterDraft, appearance_reference: str | None = None) -> Character:
-    """
-    Converts an LLMCharacterDraft to a domain Character, keeping its aliases and adding an optional appearance reference.
-
-    Appearance reference is useful in the domain, not in the draft -- this is why this function exists.
-
-    Arguments:
-        draft: LLMCharacterDraft - An LLMCharacterDraft object.
-        appearance_reference: str - An appearance reference to bind this draft to when constructing our Character object. Defaults to None.
-
-    Returns:
-        Character - A Character object, with an appearance reference (maybe) attached.
-    """
-    return Character(
-        name=draft.name,
-        description=draft.description,
-        aliases=list(draft.aliases),
-        appearance_reference=appearance_reference
     )

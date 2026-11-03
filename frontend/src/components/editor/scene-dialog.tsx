@@ -148,6 +148,13 @@ export function SceneDialog({
                 labels={ATMOSPHERE_LABELS}
                 onChange={(atmosphere) => change({ atmosphere })}
               />
+              {locations.data?.find((l) => l.id === draft.location_id)
+                ?.setting === "interior" &&
+                draft.atmosphere !== "clear" && (
+                  <p className="text-xs text-muted-foreground">
+                    Indoors, this only changes the light.
+                  </p>
+                )}
             </div>
           </div>
           <div className="space-y-2">

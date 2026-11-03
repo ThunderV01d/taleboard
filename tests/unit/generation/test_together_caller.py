@@ -7,7 +7,7 @@ import httpx
 import pytest
 from together import BadRequestError
 
-from taleboard.rendering import together_caller
+from taleboard.generation import together_caller
 
 
 def _bad_request() -> BadRequestError:
@@ -75,14 +75,44 @@ def test_transient_bad_request_is_retried(monkeypatch):
 
 def test_persistent_bad_request_is_raised_after_retries(monkeypatch):
     """
-    Verifies that a bad request is raised once all permitted retries have been used up.
+    Verifies that a bad request still coming back once all permitted retries have been used up raises RequestRejectedError, with Together AI's error as its cause, after waiting longer each time.
 
     Arguments:
         monkeypatch: pytest.MonkeyPatch - Used to swap in the fake client.
     """
     client = _FakeClient(failures=99)
     monkeypatch.setattr(together_caller, "_get_client", lambda: client)
+    waits: list[float] = []
 
-    with pytest.raises(BadRequestError):
-        together_caller._generate_with_retry({}, sleep=lambda s: None)
+    with pytest.raises(together_caller.RequestRejectedError) as raised:
+        together_caller._generate_with_retry({}, sleep=waits.append)
+    assert isinstance(raised.value.__cause__, BadRequestError)
     assert client.calls == together_caller.BAD_REQUEST_RETRIES + 1
+    assert waits == [together_caller.RETRY_BACKOFF_S * n for n in range(1, together_caller.BAD_REQUEST_RETRIES + 1)]
+
+
+def test_a_content_refusal_is_never_retried(monkeypatch):
+    """
+    Verifies that a 400 refusing the prompt for its content raises ContentRefusedError on the first call -- retrying can't change the answer.
+
+    Arguments:
+        monkeypatch: pytest.MonkeyPatch - Used to swap in the fake client.
+    """
+    response = httpx.Response(400, request=httpx.Request("POST", "https://api.together.xyz/v1/images/generations"))
+    refusal = BadRequestError("Request blocked. The prompt was flagged for content that violates our safety policies.", response=response, body=None)
+    calls = []
+
+    class Refusing:
+        images = None
+
+        def generate(self, **kwargs):
+            calls.append(kwargs)
+            raise refusal
+
+    client = Refusing()
+    client.images = client
+    monkeypatch.setattr(together_caller, "_get_client", lambda: client)
+
+    with pytest.raises(together_caller.ContentRefusedError):
+        together_caller._generate_with_retry({}, sleep=lambda s: pytest.fail("a refusal was retried"))
+    assert len(calls) == 1

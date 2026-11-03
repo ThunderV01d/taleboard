@@ -22,5 +22,5 @@ testpaths = ["tests"]
 
 [project.optional-dependencies]
 api = ["fastapi", "mangum"]
-worker = ["together", "rembg[cpu]"]
+worker = ["together", "rembg[cpu]", "numpy", "scipy"]
 dev = ["taleboard[api,worker]", "pytest", "python-dotenv", "moto[dynamodb,s3,sqs,ssm]", "httpx"]

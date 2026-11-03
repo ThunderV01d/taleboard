@@ -29,6 +29,12 @@ export const FACING_LABELS: Record<Schemas["Facing"], string> = {
   west: "West",
 }
 
+/** Whether a location is indoors or out -- decides how its scenes' light and weather are drawn */
+export const SETTING_LABELS: Record<Schemas["Setting"], string> = {
+  interior: "Interior (indoors)",
+  exterior: "Exterior (outdoors)",
+}
+
 export const TIME_OF_DAY_LABELS: Record<Schemas["TimeOfDay"], string> = {
   dawn: "Dawn",
   day: "Day",

@@ -1,7 +1,9 @@
 import {
   CloudCheckIcon,
   CloudUploadIcon,
+  LoaderCircleIcon,
   Redo2Icon,
+  SparklesIcon,
   TriangleAlertIcon,
   Undo2Icon,
 } from "lucide-react"
@@ -23,6 +25,7 @@ import { DeleteDialog } from "@/components/delete-dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { ApiError } from "@/lib/api"
+import type { GenerateTarget, LayerProgress } from "@/lib/generation"
 import {
   FACING_LABELS,
   LAYER_TYPE_LABELS,
@@ -48,11 +51,10 @@ import {
 import type { Character, Location, Prop } from "@/lib/registries"
 import type { Scene } from "@/lib/scenes"
 import {
-  draftOf,
   editorReducer,
   initialState,
   isDirty,
-  sameDraft,
+  onlyDrawnSince,
   toSaveBody,
   type Draft,
   type ShotFields,
@@ -77,6 +79,10 @@ type SaveStatus = "saved" | "saving" | "failed" | "conflict"
  * was loaded at, so if the shot was saved somewhere else in the meantime -- another tab -- the save is refused and
  * you choose whose version to keep, rather than one silently overwriting the other.
  *
+ * Generation saves images into the shot on the server while it's open; when a newer copy changes only that, it's
+ * merged into the draft (and its undo history) -- a save racing it is merged and retried too -- so drawing never
+ * shows as a conflict, and never undoes an edit.
+ *
  * Mount it with key={shot.id}: everything here (the draft, undo history, selection) belongs to one shot.
  */
 export function ShotEditor({
@@ -87,6 +93,9 @@ export function ShotEditor({
   props,
   locations,
   toolbarSlot,
+  progress,
+  drawing,
+  onGenerate,
 }: {
   projectId: string
   scene: Scene
@@ -96,6 +105,12 @@ export function ShotEditor({
   locations: Location[]
   /** Where to draw undo/redo and the save status -- the page's toolbar row (nothing is drawn until it exists) */
   toolbarSlot: HTMLElement | null
+  /** Where each layer stands with generation, by layer ID */
+  progress: Record<string, LayerProgress>
+  /** True while any of this shot's layers is waiting or being drawn */
+  drawing: boolean
+  /** Asks for layers to be drawn */
+  onGenerate: (target: GenerateTarget) => Promise<unknown>
 }) {
   const [state, dispatch] = useReducer(editorReducer, shot, initialState)
   const saveShot = useSaveShot(projectId, scene.id)
@@ -105,18 +120,6 @@ export function ShotEditor({
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
   const [tool, setTool] = useState<Tool>("select")
 
-  // When the shot comes back from elsewhere with a newer version but the same content -- reordering the deck saves
-  // the shots it moves -- take the new version, so the next save isn't refused as a conflict
-  const [seenVersion, setSeenVersion] = useState(shot.version)
-  if (shot.version !== seenVersion) {
-    setSeenVersion(shot.version)
-    if (
-      shot.version > state.baseline.version &&
-      sameDraft(draftOf(shot), draftOf(state.baseline))
-    ) {
-      dispatch({ type: "saved", shot })
-    }
-  }
   // The URL each image is drawn from, kept for the whole session: the first one known for it wins. Every save brings
   // back a fresh signed URL for every image, and switching to it would make the canvas download (and blink) each image
   // again after every edit. Uploads start with a URL for the file itself.
@@ -125,6 +128,20 @@ export function ShotEditor({
   }))
   const learnUrls = (urls: Record<string, string>) =>
     setKnownUrls((known) => ({ ...urls, ...known }))
+
+  // When the shot comes back from elsewhere with a newer version that changes nothing but what generation draws -- the
+  // worker saving an image, or the deck saving a reorder -- merge it in, so the next save isn't refused as a conflict
+  const [seenVersion, setSeenVersion] = useState(shot.version)
+  if (shot.version !== seenVersion) {
+    setSeenVersion(shot.version)
+    if (
+      shot.version > state.baseline.version &&
+      onlyDrawnSince(state.baseline, shot)
+    ) {
+      dispatch({ type: "merge", shot })
+      learnUrls(shot.image_urls)
+    }
+  }
   const latest = useRef(state)
   const saving = useRef(false)
   const failedDraft = useRef<Draft | null>(null)
@@ -140,23 +157,48 @@ export function ShotEditor({
     conflicted.current = status === "conflict"
   })
 
-  const save = useCallback(async () => {
-    const current = latest.current
-    if (!isDirty(current) || saving.current) {
-      return
+  /** Saves the draft if it needs it. Resolves to whether the server now has it (false if the save failed) */
+  const save = useCallback(async (): Promise<boolean> => {
+    let current = latest.current
+    if (!isDirty(current)) {
+      return true
+    }
+    if (saving.current) {
+      return false
     }
     saving.current = true
     setStatus("saving")
     try {
-      const saved = await mutateSave.current({
-        shotId: shot.id,
-        shot: toSaveBody(current),
-      })
-      dispatch({ type: "saved", shot: saved })
-      learnUrls(saved.image_urls)
-      setStatus("saved")
-      setProblem(null)
-      failedDraft.current = null
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const saved = await mutateSave.current({
+            shotId: shot.id,
+            shot: toSaveBody(current),
+          })
+          dispatch({ type: "saved", shot: saved })
+          learnUrls(saved.image_urls)
+          setStatus("saved")
+          setProblem(null)
+          failedDraft.current = null
+          return true
+        } catch (error) {
+          // Refused because generation saved an image meanwhile: merge it in, and save again on top of it
+          if (
+            error instanceof ApiError &&
+            error.status === 409 &&
+            attempt < 3
+          ) {
+            const newer = await fetchShot(projectId, scene.id, shot.id)
+            if (onlyDrawnSince(current.baseline, newer)) {
+              dispatch({ type: "merge", shot: newer })
+              learnUrls(newer.image_urls)
+              current = editorReducer(current, { type: "merge", shot: newer })
+              continue
+            }
+          }
+          throw error
+        }
+      }
     } catch (error) {
       failedDraft.current = current.draft
       if (error instanceof ApiError && error.status === 409) {
@@ -165,10 +207,30 @@ export function ShotEditor({
         setStatus("failed")
         setProblem(error instanceof Error ? error.message : String(error))
       }
+      return false
     } finally {
       saving.current = false
     }
-  }, [shot.id])
+  }, [shot.id, projectId, scene.id])
+
+  /** Asks for this shot's layers (or just one of them) to be drawn -- once the server has them all, saving first */
+  const generate = async (layerId?: string) => {
+    while (saving.current) {
+      await new Promise((resolve) => setTimeout(resolve, 100)) // A save is already on its way
+    }
+    if (!(await save())) {
+      return
+    }
+    try {
+      await onGenerate({
+        scene_id: scene.id,
+        shot_id: shot.id,
+        ...(layerId && { layer_id: layerId }),
+      })
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   // Save a moment after the last change -- unless this exact draft already failed, or there's a conflict to settle
   useEffect(() => {
@@ -417,7 +479,7 @@ export function ShotEditor({
     return null
   }
 
-  const placeholderLabel = (layer: Layer): string => {
+  const waitingLabel = (layer: Layer): string => {
     switch (layer.type) {
       case "background":
         return `Background -- not drawn yet\n${location?.name ?? scene.location_id}, facing ${FACING_LABELS[layer.facing].toLowerCase()}`
@@ -427,6 +489,20 @@ export function ShotEditor({
       default:
         return layer.name || "Image"
     }
+  }
+
+  /** What a not-yet-drawn layer's placeholder says -- with where it's up to, while it's being drawn */
+  const placeholderLabel = (layer: Layer): string => {
+    const where = progress[layer.id]
+    const status =
+      where?.state === "drawing"
+        ? "Drawing..."
+        : where?.state === "waiting"
+          ? "Waiting to be drawn"
+          : where?.state === "failed"
+            ? "Couldn't be drawn"
+            : null
+    return status ? `${status}\n${waitingLabel(layer)}` : waitingLabel(layer)
   }
 
   const toolbar = (
@@ -452,6 +528,20 @@ export function ShotEditor({
         <Redo2Icon />
       </Button>
       <SaveIndicator status={status} dirty={dirty} onSave={() => void save()} />
+      <Button
+        variant="outline"
+        size="sm"
+        title="Draw every layer in this shot that isn't drawn yet, or has changed since"
+        disabled={drawing}
+        onClick={() => void generate()}
+      >
+        {drawing ? (
+          <LoaderCircleIcon className="animate-spin" />
+        ) : (
+          <SparklesIcon />
+        )}
+        {drawing ? "Drawing..." : "Generate shot"}
+      </Button>
     </>
   )
 
@@ -570,6 +660,8 @@ export function ShotEditor({
           onEditLayer={editSelected}
           onReplaceImage={(file) => void replaceImage(file)}
           onDistort={() => setTool("distort")}
+          progress={selected ? progress[selected.id] : undefined}
+          onGenerate={(layerId) => void generate(layerId)}
         />
       </aside>
 

@@ -1,20 +1,27 @@
 """
 Unit tests for location_extraction.
 
-Covers location ID assignment, the empty-story guard, retries and conversion to domain locations. No LLM calls are made.
+Covers location ID assignment, settings and views, leaving the story's props out, the empty-story guard, retries and conversion to domain locations. No LLM calls are made.
 """
 import json
 
 import pytest
 from pydantic import ValidationError
 
-from taleboard.parsing.llm_schemas import LLMLocationDraft
-from taleboard.parsing.location_extraction import LOCATION_RETRIES, extract_locations, to_domain_location
+from taleboard.parsing.llm_schemas import LLMLocationDraft, LLMPropDraft
+from taleboard.parsing.location_extraction import LOCATION_RETRIES, extract_locations, unplaced_features
 from taleboard.parsing.prompts import LOCATION_EXTRACTION_INSTRUCTIONS
 
+VIEWS = {
+    "north": "the back wall: a two-pane window above a desk",
+    "east": "a side wall: a filing cabinet",
+    "south": "the front wall: a door",
+    "west": "the other side wall, plain and mostly bare",
+}
+
 LOCATIONS_RESPONSE = json.dumps({"locations": [
-    {"name": "The Harbourmaster's Office", "description": "a small wood-panelled office with a desk and a telephone"},
-    {"name": "Lamp Room", "description": "a round stone room around a huge brass lamp"},
+    {"name": "The Harbourmaster's Office", "setting": "interior", "description": "a small wood-panelled office", "views": VIEWS},
+    {"name": "Lamp Room", "setting": "interior", "description": "a round stone room", "views": VIEWS},
 ]})
 
 
@@ -92,11 +99,73 @@ def test_extract_locations_gives_up_after_its_retries():
         extract_locations("Brandt climbed.", lambda prompt: calls.append(prompt) or json.dumps({"locations": []}))
     assert len(calls) == LOCATION_RETRIES + 1
 
-
-def test_to_domain_location_maps_fields_with_no_master_plate_yet():
+def test_each_location_has_a_setting_and_a_view_for_every_side():
     """
-    Verifies that a location draft converts to a domain Location with the same name and description, and no master plate.
+    Verifies that a location keeps its setting and all four views.
     """
-    location = to_domain_location(LLMLocationDraft(name="Lamp Room", description="a round stone room"))
+    office = extract_locations("Brandt waited.", lambda prompt: LOCATIONS_RESPONSE)["the_harbourmaster_s_office"]
 
-    assert (location.name, location.description, location.master_plate) == ("Lamp Room", "a round stone room", None)
+    assert office.setting == "interior"
+    assert office.views.model_dump() == VIEWS
+
+
+def test_a_location_missing_a_view_is_sent_back():
+    """
+    Verifies that a location without a view for every side fails validation, and the retry asks for one.
+    """
+    partial = json.dumps({"locations": [{"name": "Quay", "setting": "exterior", "description": "a stone quay", "views": {"north": "the harbour"}}]})
+    responses = iter([partial, LOCATIONS_RESPONSE])
+    prompts: list[str] = []
+
+    extract_locations("Brandt waited.", lambda prompt: prompts.append(prompt) or next(responses))
+
+    assert "a view for every side" in prompts[1]
+
+
+def test_the_location_prompt_lists_the_props_to_leave_out():
+    """
+    Verifies that the story's props are listed in the prompt (they're drawn separately), and "none" when there are none.
+    """
+    prompts: list[str] = []
+    props = {"lantern": LLMPropDraft(name="Lantern", description="an old brass storm lantern")}
+
+    extract_locations("Brandt lit the lantern.", lambda prompt: prompts.append(prompt) or LOCATIONS_RESPONSE, props)
+    extract_locations("Brandt waited.", lambda prompt: prompts.append(prompt) or LOCATIONS_RESPONSE)
+
+    assert "PROPS:\n- Lantern: an old brass storm lantern" in prompts[0]
+    assert "PROPS:\nnone" in prompts[1]
+
+
+def _lamp_room(views: dict, features: list[str]) -> dict:
+    return {"name": "Lamp Room", "setting": "interior", "description": "a round stone room", "features": features, "views": views}
+
+
+def test_a_feature_on_no_side_is_found_by_its_noun():
+    """
+    Verifies the check: a feature counts as placed when its last word (singular or plural) is in the description or a view.
+    """
+    location = LLMLocationDraft.model_validate(_lamp_room(
+        {**VIEWS, "north": "the front of the room: a great lens on a brass pedestal"},
+        ["a great lens on a pedestal", "spiral stairs", "a stone room", "a hook", "!"],
+    ))
+
+    assert unplaced_features(location) == ["spiral stairs", "a hook"]
+
+
+def test_a_location_with_a_feature_on_no_side_is_sent_back_once_to_place_it():
+    """
+    Verifies that a listed feature missing from every view sends the list back, naming the feature -- and that a second miss keeps the location as it is, rather than failing.
+    """
+    missing = json.dumps({"locations": [_lamp_room(VIEWS, ["spiral stairs"])]})
+    placed = json.dumps({"locations": [_lamp_room({**VIEWS, "south": "the back of the room: the top of the spiral stairs"}, ["spiral stairs"])]})
+    prompts: list[str] = []
+    responses = iter([missing, placed])
+
+    locations = extract_locations("Mara climbed the spiral stairs.", lambda prompt: prompts.append(prompt) or next(responses))
+
+    assert "spiral stairs" in locations["lamp_room"].views.south
+    assert "- Lamp Room: spiral stairs" in prompts[1]
+
+    calls: list[str] = []
+    kept = extract_locations("Mara climbed.", lambda prompt: calls.append(prompt) or missing)
+    assert len(calls) == LOCATION_RETRIES + 1 and kept["lamp_room"].views.south == VIEWS["south"]

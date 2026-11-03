@@ -8,10 +8,13 @@ Covers projects, the three registries (ID suffixing, per-orientation references,
 import pytest
 from pydantic import ValidationError
 
+from datetime import datetime, timezone
+
 from taleboard.schema.enums import Facing, Orientation, ShotSize, TimeOfDay
+from taleboard.schema.generation import GenerationJob, GenerationTask, JobStatus, TaskStatus
 from taleboard.schema.layers import BackgroundLayer, CharacterLayer, GroupLayer, PropLayer, TextLayer, Transform
 from taleboard.schema.storyboard import Character, Location, Prop, Reference, Scene, Shot
-from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStore, owner_index_key, registry_sk, scene_sk, shot_sk
+from taleboard.storage.storyboard_store import ShotConflictError, StoryboardStore, generated_key, job_sk, owner_index_key, registry_sk, scene_sk, shot_sk
 
 OWNER = "mara-user"
 
@@ -22,7 +25,7 @@ def boards(aws):
     A StoryboardStore backed by the shared fakes.
 
     Arguments:
-        aws: tuple[ProjectStore,JobQueue] - The shared fakes (they also set the TALEBOARD_* environment variables).
+        aws: None - The shared fakes (they set the TALEBOARD_* environment variables).
 
     Returns:
         StoryboardStore - A store backed by the fakes.
@@ -366,3 +369,249 @@ def test_deleting_a_scene_deletes_its_shots_but_no_one_elses(boards, pid):
     assert [s.id for s in boards.list_scenes(pid)] == [kept.id]
     assert boards.list_shots(pid, doomed.id) == []
     assert len(boards.list_shots(pid, kept.id)) == 1
+
+
+def test_a_generated_image_key_depends_on_exactly_what_went_into_it():
+    """
+    Verifies that the same inputs (in any order) give the same key, that changing any input gives a new one, and that keys sit under the project's own prefix.
+    """
+    inputs = {"prompt": "a lighthouse at dusk", "references": ["projects/p1/generated/plate/abc.png"]}
+    key = generated_key("p1", "framing", inputs)
+
+    assert key == generated_key("p1", "framing", dict(reversed(list(inputs.items()))))
+    assert key.startswith("projects/p1/generated/framing/") and key.endswith(".png")
+    assert len({
+        key,
+        generated_key("p1", "framing", {**inputs, "prompt": "a lighthouse at dawn"}),
+        generated_key("p1", "framing", {**inputs, "references": []}),
+        generated_key("p1", "details", inputs),
+        generated_key("p2", "framing", inputs),
+    }) == 5
+
+
+def test_an_image_is_stored_and_found_again_and_a_missing_one_is_none(boards, pid):
+    """
+    Verifies that put_image and get_image round-trip, and that an image never stored reads as None rather than an error.
+    """
+    key = generated_key(pid, "plate", {"prompt": "a lighthouse"})
+
+    assert boards.get_image(key) is None
+    boards.put_image(key, b"png bytes")
+    assert boards.get_image(key) == b"png bytes"
+
+
+def test_deleting_a_project_deletes_its_generated_images(boards, pid):
+    """
+    Verifies that generated images live under the project's prefix, so delete_project removes them with everything else.
+    """
+    key = generated_key(pid, "pose", {"prompt": "waving"})
+    boards.put_image(key, b"png bytes")
+
+    boards.delete_project(pid)
+
+    assert boards.get_image(key) is None
+
+
+def test_saving_one_entry_image_keeps_everything_else_about_the_entry(boards, pid):
+    """
+    Verifies that save_entry_image writes only the one plate or reference -- so an edit made to the entry meanwhile (eg:- its description) survives, as do its other images.
+    """
+    lighthouse = boards.create_entry(pid, Location, "Lighthouse", description="a lamp room")
+    mara = boards.create_entry(pid, Character, "Mara", description="a keeper")
+    boards.save_entry(pid, lighthouse.model_copy(update={"description": "edited meanwhile", "plates": {Facing.SOUTH: "south.png"}}))
+    boards.save_entry(pid, mara.model_copy(update={"description": "edited meanwhile"}))
+
+    lighthouse.plates[Facing.NORTH] = "north.png"
+    boards.save_entry_image(pid, lighthouse, "north")
+    mara.references[Orientation.LEFT] = Reference(image="left.png", source="generated")
+    boards.save_entry_image(pid, mara, "left")
+
+    stored_place = boards.get_entry(pid, Location, lighthouse.id)
+    stored_mara = boards.get_entry(pid, Character, mara.id)
+    assert stored_place.description == stored_mara.description == "edited meanwhile"
+    assert stored_place.plates == {Facing.SOUTH: "south.png", Facing.NORTH: "north.png"}
+    assert stored_mara.references == {Orientation.LEFT: Reference(image="left.png", source="generated")}
+
+
+def test_saving_an_image_for_a_deleted_entry_is_a_key_error_and_creates_nothing(boards, pid):
+    """
+    Verifies that save_entry_image never brings back an entry deleted while its image was being generated.
+    """
+    lamp = boards.create_entry(pid, Prop, "Lamp")
+    boards.delete_entry(pid, Prop, lamp.id)
+    lamp.references[Orientation.TOWARDS_CAMERA] = Reference(image="front.png", source="generated")
+
+    with pytest.raises(KeyError):
+        boards.save_entry_image(pid, lamp, "towards_camera")
+    assert boards.list_entries(pid, Prop) == []
+
+
+# --- Generation jobs ---------------------------------------------------------------------------------------------------
+
+def _job(created_at: datetime = datetime(2026, 10, 29, 12, tzinfo=timezone.utc), tasks: int = 2) -> GenerationJob:
+    """
+    A queued job drawing a few layers of one shot.
+
+    Arguments:
+        created_at: datetime - When it was asked for. Defaults to midday on 29 October 2026.
+        tasks: int - How many layers it draws. Defaults to 2.
+
+    Returns:
+        GenerationJob - The job.
+    """
+    return GenerationJob(created_at=created_at, tasks=[GenerationTask(scene_id="s1", shot_id="sh1", layer_id=f"l{i}") for i in range(tasks)])
+
+
+def test_a_job_is_stored_with_its_tasks_and_found_again(boards, pid):
+    """
+    Verifies that a job round-trips, tasks and all, under its own sort key -- and is never overwritten by creating it again.
+    """
+    job = _job()
+    boards.create_job(pid, job)
+
+    assert job_sk(job.id) == f"JOB#{job.id}"
+    assert boards.get_job(pid, job.id) == job
+    with pytest.raises(Exception, match="ConditionalCheckFailed"):
+        boards.create_job(pid, job)
+    with pytest.raises(KeyError):
+        boards.get_job(pid, "missing")
+
+
+def test_jobs_are_listed_newest_first_and_kept_out_of_the_other_listings(boards, pid):
+    """
+    Verifies that list_jobs orders by when each was asked for, and that jobs don't turn up as scenes, shots or registry entries.
+    """
+    older, newer = _job(datetime(2026, 10, 1, tzinfo=timezone.utc)), _job(datetime(2026, 10, 2, tzinfo=timezone.utc))
+    boards.create_job(pid, older)
+    boards.create_job(pid, newer)
+
+    assert [job.id for job in boards.list_jobs(pid)] == [newer.id, older.id]
+    assert boards.list_scenes(pid) == [] and boards.list_all_shots(pid) == [] and boards.list_entries(pid, Location) == []
+
+
+def test_a_tasks_result_is_recorded_without_touching_the_others(boards, pid):
+    """
+    Verifies that set_task_status changes one task alone, and set_job_status the job alone.
+    """
+    job = _job(tasks=3)
+    boards.create_job(pid, job)
+
+    boards.set_task_status(pid, job.id, 1, TaskStatus.FAILED, "the cutout came out empty")
+    boards.set_task_status(pid, job.id, 0, TaskStatus.DONE)
+    boards.set_job_status(pid, job.id, JobStatus.RUNNING)
+
+    stored = boards.get_job(pid, job.id)
+    assert [(t.status, t.error) for t in stored.tasks] == [
+        (TaskStatus.DONE, None), (TaskStatus.FAILED, "the cutout came out empty"), (TaskStatus.PENDING, None),
+    ]
+    assert (stored.status, stored.error) == (JobStatus.RUNNING, None)
+
+
+def test_updating_a_missing_job_is_a_key_error_and_creates_nothing(boards, pid):
+    """
+    Verifies that a job deleted (eg:- with its project) is never brought back by a late status update.
+    """
+    with pytest.raises(KeyError):
+        boards.set_job_status(pid, "missing", JobStatus.FAILED, "gone")
+    with pytest.raises(KeyError):
+        boards.set_task_status(pid, "missing", 0, TaskStatus.DONE)
+    assert boards.list_jobs(pid) == []
+
+
+def _shot_with_layers() -> Shot:
+    """
+    A shot with a background and, inside a group, a character -- neither drawn yet.
+    """
+    return Shot(scene_id="s1", layers=[
+        BackgroundLayer(id="bg"),
+        GroupLayer(id="g", children=[CharacterLayer(id="mara", character_id="mara")]),
+    ])
+
+
+def test_a_generated_image_is_saved_into_its_layer_at_any_depth(boards, pid):
+    """
+    Verifies that save_generated_layer sets just the image and params of the layer with that ID -- inside a group too -- and bumps the shot's version.
+    """
+    shot = _shot_with_layers()
+    boards.create_shot(pid, shot)
+    drawn = CharacterLayer(id="mara", character_id="mara", image="poses/mara.png", last_generated_params={"orientation": "left", "action": "waving"})
+
+    assert boards.save_generated_layer(pid, "s1", shot.id, drawn) is True
+
+    stored = boards.get_shot(pid, "s1", shot.id)
+    mara = next(l for l in stored.all_layers() if l.id == "mara")
+    assert (mara.image, mara.last_generated_params.action) == ("poses/mara.png", "waving")
+    assert mara.orientation == shot.layers[1].children[0].orientation  # Only the two fields were copied
+    assert stored.version == shot.version + 1
+
+
+def test_a_generated_image_never_undoes_an_edit_made_meanwhile(boards, pid):
+    """
+    Verifies that an edit saved while the layer was being drawn survives -- the image goes onto the shot as it is now.
+    """
+    shot = _shot_with_layers()
+    boards.create_shot(pid, shot)
+    edited = boards.save_shot(pid, shot.model_copy(update={"description": "edited meanwhile"}))
+
+    boards.save_generated_layer(pid, "s1", shot.id, BackgroundLayer(id="bg", image="plates/north.png"))
+
+    stored = boards.get_shot(pid, "s1", shot.id)
+    assert (stored.description, stored.layers[0].image, stored.version) == ("edited meanwhile", "plates/north.png", edited.version + 1)
+
+
+def test_a_save_that_loses_a_race_tries_again(boards, pid, monkeypatch):
+    """
+    Verifies that a conflicting save is retried on a fresh copy, and gives up with ShotConflictError only after every attempt.
+    """
+    shot = _shot_with_layers()
+    boards.create_shot(pid, shot)
+    real_save, conflicts = boards.save_shot, iter([True, False])
+
+    def save_losing_once(project_id, copy):
+        if next(conflicts, False):
+            real_save(project_id, boards.get_shot(project_id, copy.scene_id, copy.id))  # Someone else saves first
+        return real_save(project_id, copy)
+
+    monkeypatch.setattr(boards, "save_shot", save_losing_once)
+    assert boards.save_generated_layer(pid, "s1", shot.id, BackgroundLayer(id="bg", image="a.png")) is True
+
+    monkeypatch.setattr(boards, "save_shot", lambda project_id, copy: (_ for _ in ()).throw(ShotConflictError(copy.id, 99)))
+    with pytest.raises(ShotConflictError):
+        boards.save_generated_layer(pid, "s1", shot.id, BackgroundLayer(id="bg", image="b.png"), attempts=3)
+
+
+@pytest.mark.parametrize("scene_id, shot_id, layer", [
+    ("s1", "missing", BackgroundLayer(id="bg", image="x.png")),  # The shot was deleted
+    ("s1", None, BackgroundLayer(id="gone", image="x.png")),  # The layer was deleted
+    ("s1", None, PropLayer(id="bg", prop_id="lamp", image="x.png")),  # Its ID now belongs to another kind of layer
+])
+def test_a_generated_image_for_something_deleted_is_dropped(boards, pid, scene_id, shot_id, layer):
+    """
+    Verifies that nothing is saved (and False is returned) when the shot or layer the image was for has gone.
+
+    Arguments:
+        scene_id: str - The scene to save into.
+        shot_id: str - The shot to save into (None for the one that exists).
+        layer: GeneratedLayer - The generated layer.
+    """
+    shot = _shot_with_layers()
+    boards.create_shot(pid, shot)
+
+    assert boards.save_generated_layer(pid, scene_id, shot_id or shot.id, layer) is False
+    assert boards.get_shot(pid, "s1", shot.id).version == shot.version
+
+
+def test_an_import_jobs_story_is_kept_beside_it_and_goes_with_the_project(boards):
+    """
+    Verifies that a story is saved and read back by its job's ID, that a missing one is a KeyError, and that deleting the project deletes it.
+    """
+    pid = boards.create_project("Lighthouse", "mara-user").project_id
+    boards.save_story(pid, "job-1", "Mara climbed the stairs.")
+
+    assert boards.get_story(pid, "job-1") == "Mara climbed the stairs."
+    with pytest.raises(KeyError):
+        boards.get_story(pid, "job-2")
+    boards.delete_project(pid)
+    with pytest.raises(KeyError):
+        boards.get_story(pid, "job-1")
+

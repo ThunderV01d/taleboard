@@ -65,6 +65,13 @@ class Facing(str,Enum):
     SOUTH = "south"
     WEST = "west"
 
+class Setting(str,Enum):
+    """
+    Whether a location is indoors or out. Decides how its plates are worded ("inside" a room, or "at" a place), and how a scene's time of day and weather are drawn there: outdoors as sky and weather; indoors as light alone, so rain and snow are never drawn inside a room.
+    """
+    INT = "interior"
+    EXT = "exterior"
+
 class TimeOfDay(str,Enum):
     """
     Time of day a scene takes place at. Lights the scene's backgrounds together with its atmosphere.
@@ -84,21 +91,3 @@ class Atmosphere(str,Enum):
     FOGGY = "foggy"
     STORMY = "stormy"
     SNOWY = "snowy"
-
-class ProjectStatus(str,Enum):
-    """
-    Lifecycle of a project's render job.
-
-    Attributes:
-        CREATED: str - Represents a project where no story is submitted yet.
-        PENDING: str - Represents a project where a story is submitted and a job is queued.
-        IN_PROGRESS: str - Represents a project where a worker is breaking down or rendering a story.
-        COMPLETE: str - Represents a project where the render job is complete.
-        FAILED: str - Represents a project where the render job has failed.
-    """
-    # These enums are never sent to the LLM -- hence why the docstring is so elaborate.
-    CREATED = "created"
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETE = "complete"
-    FAILED = "failed"

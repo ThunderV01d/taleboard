@@ -6,8 +6,8 @@ Uses fake LLM call functions, so no LLM calls are made.
 import json
 
 from taleboard.parsing.cast_extraction import assign_ids
-from taleboard.parsing.contamination_judge import JudgeItem, judge_cast, judge_locations, judge_texts
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft
+from taleboard.parsing.contamination_judge import JudgeItem, judge_cast, judge_locations, judge_props, judge_texts
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMPropDraft
 from taleboard.parsing.prompts import build_contamination_judge_prompt
 from taleboard.parsing.shot_breakdown import MAX_RETRIES, get_shots_for_paragraph
 
@@ -42,7 +42,7 @@ def _verdicts(*flagged: tuple[str, str]) -> str:
 
 def _shot(action: str, details: str = "") -> dict:
     """
-    Builds a raw one-region shot for Alice, on a street.
+    Builds a raw one-region shot for Alice, facing north.
 
     Arguments:
         action: str - Alice's action.
@@ -52,7 +52,7 @@ def _shot(action: str, details: str = "") -> dict:
         dict - Raw shot, as the breakdown LLM returns it.
     """
     return {
-        "description": action, "location_id": "street", "details": details, "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
+        "description": action, "facing": "north", "details": details, "shot_size": "medium", "angle": "eye_level", "duration_s": 2.0,
         "regions": [{"character_id": "alice", "position": "mid_center", "size": "medium", "orientation": "towards_camera", "action": action}],
     }
 
@@ -233,9 +233,115 @@ def test_judge_locations_rewrites_a_flagged_location_description_labelled_as_a_p
         judge_prompts.append(prompt)
         return next(responses)
 
-    locations = {"office": LLMLocationDraft(name="Office", description="the office where Alice waits for the call")}
+    locations = {"office": _office("the office where Alice waits for the call")}
 
     judged = judge_locations(locations, _make_cast(), call_judge)
 
     assert judged["office"].description == "a small office with a desk and a telephone"
     assert "kind: location, place: Office" in judge_prompts[0]
+
+
+_VIEWS = {
+    "north": "the back wall: a window above a desk",
+    "east": "a side wall: a filing cabinet",
+    "south": "the front wall: a door",
+    "west": "the other side wall, plain and mostly bare",
+}
+
+
+def _office(description: str = "a small wood-panelled office", **views: str) -> LLMLocationDraft:
+    return LLMLocationDraft(name="Office", setting="interior", description=description, views={**_VIEWS, **views})
+
+
+def _lantern() -> dict[str, LLMPropDraft]:
+    return {"lantern": LLMPropDraft(name="Lantern", description="an old brass storm lantern")}
+
+
+def _recording(responses):
+    """
+    A fake judge that records each prompt and returns the next canned verdicts.
+
+    Returns:
+        tuple[CallLLM,list[str]] - The fake judge, and the list its prompts are appended to.
+    """
+    prompts: list[str] = []
+    responses = iter(responses)
+    return (lambda prompt: prompts.append(prompt) or next(responses)), prompts
+
+
+def test_judge_locations_checks_every_view_and_rewrites_a_flagged_one():
+    """
+    Verifies that each of a location's views is judged as a view of that place, and that a flagged view (here, one drawing a prop) is rewritten on its own.
+    """
+    call_judge, prompts = _recording([_verdicts(("office.views.east", "a side wall: a filing cabinet")), _verdicts()])
+    locations = {"office": _office(east="a side wall: a filing cabinet with the lantern on top")}
+
+    judged = judge_locations(locations, _make_cast(), call_judge, _lantern())
+
+    assert judged["office"].views.east == "a side wall: a filing cabinet"
+    assert judged["office"].views.north == _VIEWS["north"]
+    for side in ("north", "east", "south", "west"):
+        assert f"id: office.views.{side}, kind: view, place: Office" in prompts[0]
+    assert "PROPS:\n- Lantern: an old brass storm lantern" in prompts[0]
+
+
+def test_a_view_rewrite_that_is_too_long_is_ignored():
+    """
+    Verifies that a view rewritten past its 200-character limit leaves the location as it was.
+    """
+    call_judge, _ = _recording([_verdicts(("office.views.west", "x" * 201))])
+
+    judged = judge_locations({"office": _office()}, _make_cast(), call_judge)
+
+    assert judged["office"].views.west == _VIEWS["west"]
+
+
+def test_judge_props_rewrites_a_flagged_prop_labelled_as_an_object():
+    """
+    Verifies that a flagged prop description is replaced, judged again, and labelled as an object.
+    """
+    call_judge, prompts = _recording([_verdicts(("lantern.description", "an old brass storm lantern")), _verdicts()])
+    props = {"lantern": LLMPropDraft(name="Lantern", description="an old brass storm lantern in Alice's hand")}
+
+    judged = judge_props(props, _make_cast(), call_judge)
+
+    assert judged["lantern"].description == "an old brass storm lantern"
+    assert "kind: prop, object: Lantern" in prompts[0]
+    assert len(prompts) == 2
+
+
+def test_the_judge_prompt_lists_the_props():
+    """
+    Verifies that the story's props are listed for the judge, and "none" when there are none.
+    """
+    assert "PROPS:\n- Lantern: an old brass storm lantern" in build_contamination_judge_prompt([], _make_cast(), _lantern())
+    assert "PROPS:\nnone" in build_contamination_judge_prompt([], _make_cast())
+
+
+def test_a_rewrite_that_drops_one_of_a_locations_features_is_ignored():
+    """
+    Verifies that the judge can't lose a location's listed feature while fixing something else in the same view -- that rewrite is ignored -- while a rewrite keeping every feature goes through.
+    """
+    office = _office(north="the back wall: a great lens on a pedestal, in gloomy shadow", south="the front wall: a door, ominous")
+    office = office.model_copy(update={"features": ["a great lens on a pedestal", "a door"]})
+    call_judge, _ = _recording([
+        _verdicts(("office.views.north", "the back wall: plain stone"), ("office.views.south", "the front wall: a door")),
+        _verdicts(),
+    ])
+
+    judged = judge_locations({"office": office}, _make_cast(), call_judge)
+
+    assert judged["office"].views.north == "the back wall: a great lens on a pedestal, in gloomy shadow"
+    assert judged["office"].views.south == "the front wall: a door"
+
+
+def test_a_shots_texts_are_judged_knowing_the_props():
+    """
+    Verifies that the judge checking a paragraph's shots is told the story's props -- so it can flag one written into an action or the details.
+    """
+    call_judge, prompts = _recording([_verdicts()])
+
+    get_shots_for_paragraph("Alice waves.", _make_cast(), None, lambda prompt: json.dumps({"shots": [_shot("waving")]}), call_judge, props=_lantern())
+
+    assert "PROPS:\n- Lantern: an old brass storm lantern" in prompts[0]
+

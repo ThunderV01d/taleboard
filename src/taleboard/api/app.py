@@ -1,7 +1,7 @@
 """
 TaleBoard's HTTP API -- the editor's projects, registries, scenes and shots. Each resource's routes live in taleboard.api.routes; this module adds the sign-in check and the error handling every route shares.
 
-Imports nothing from taleboard.rendering -- loading the image models would add seconds to every cold start of the API Lambda.
+Imports nothing that loads the image models (background removal) or the story breakdown -- either would add seconds to every cold start of the API Lambda.
 
 Every endpoint needs a signed-in user. API Gateway's JWT authorizer checks the Cognito access token before the Lambda runs; get_user_id then refuses any request that arrives without one.
 
@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from taleboard.api.deps import get_user_id
-from taleboard.api.routes import projects, registries, scenes, shots, uploads
+from taleboard.api.routes import projects, registries, scenes, shots, uploads, generation, imports
 from taleboard.storage.storyboard_store import ShotConflictError
 
 app = FastAPI(title="TaleBoard API", dependencies=[Depends(get_user_id)])
@@ -45,6 +45,8 @@ app.include_router(registries.locations)
 app.include_router(scenes.router)
 app.include_router(shots.router)
 app.include_router(uploads.router)
+app.include_router(generation.router)
+app.include_router(imports.router)
 
 # lifespan="off": startup/shutdown hooks don't map onto Lambda's invoke model, and the store is already cached per container by get_boards
 handler = Mangum(app, lifespan="off")

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from taleboard.schema.enums import Atmosphere, Facing, Orientation, ShotSize, TimeOfDay
+from taleboard.schema.enums import Setting, Atmosphere, Facing, Orientation, ShotSize, TimeOfDay
 from taleboard.schema.layers import BackgroundLayer, CharacterLayer, GroupLayer, ImageLayer, PropLayer, TextLayer
 from taleboard.schema.storyboard import Character, Location, Project, Prop, Reference, Scene, Shot
 
@@ -197,3 +197,27 @@ def test_a_project_needs_a_name_and_an_owner_and_gets_its_own_id():
     assert Project(name="A", owner_id="mara", created_at=now).project_id != Project(name="B", owner_id="mara", created_at=now).project_id
     with pytest.raises(ValidationError):
         Project(name="A", created_at=now)  # Every project has an owner
+
+
+def test_a_location_is_indoors_with_no_views_unless_told_otherwise():
+    """
+    Verifies a location's defaults -- an interior, with nothing said about any side -- and that views are keyed by compass facing.
+    """
+    office = Location(id="office", name="Office")
+    quay = Location(id="quay", name="Quay", setting="exterior", views={"north": "the harbour", "south": "a row of cottages"})
+
+    assert (office.setting, office.views) == (Setting.INT, {})
+    assert (quay.setting, quay.views) == (Setting.EXT, {Facing.NORTH: "the harbour", Facing.SOUTH: "a row of cottages"})
+    with pytest.raises(ValidationError):
+        Location(id="office", name="Office", setting="underground")
+    with pytest.raises(ValidationError):
+        Location(id="office", name="Office", views={"up": "the ceiling"})
+
+
+def test_each_view_is_capped_so_a_plate_prompt_stays_short():
+    """
+    Verifies that one side's view can be up to 200 characters, and no more.
+    """
+    Location(id="office", name="Office", views={"north": "x" * 200})
+    with pytest.raises(ValidationError):
+        Location(id="office", name="Office", views={"north": "x" * 201})

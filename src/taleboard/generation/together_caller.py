@@ -1,7 +1,7 @@
 """
 Manages Together API calls to Together AI.
 
-Used extensively in the rendering pipeline.
+Used by the generation engine.
 
 This module also includes helper functions to retry generation.
 
@@ -14,7 +14,7 @@ Attributes:
     REQUEST_TIMEOUT: httpx.Timeout - Per-request timeout; a response that hasn't started by then is treated as a stall.
     REQUEST_RETRIES: int - Number of times the SDK retries a timed-out or failed request.
     _client: Together - A Together AI client.
-    BAD_REQUEST_RETRIES: int - Number of times a bad request should retry before giving up.
+    BAD_REQUEST_RETRIES: int - Number of times a bad request should retry before giving up (a content-policy refusal never is).
     RETRY_BACKOFF_S: float - How long we should wait before retrying a bad request.
 """
 import base64
@@ -33,9 +33,10 @@ CHARACTER_HEIGHT = 2048
 BACKGROUND_WIDTH = 1024
 BACKGROUND_HEIGHT = 1024
 
-# Normal generations take 6-18 seconds; a response that hasn't started after 30 seconds has stalled, so the SDK gives up and retries sooner
-REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
-REQUEST_RETRIES = 3
+# Text-to-image takes 6-18 seconds, but drawing from reference images (most of v0.2's images) takes 25-30, and sometimes
+# up to about 75 -- so a response that hasn't come back after 2 minutes has stalled. One retry covers a stall; more would only wait minutes on an outage (the delivery is retried later for that)
+REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
+REQUEST_RETRIES = 1
 
 _client: Together | None = None
 
@@ -123,12 +124,37 @@ def _generate_image(
     response = _generate_with_retry(kwargs)
     return base64.b64decode(response.data[0].b64_json) 
 
-BAD_REQUEST_RETRIES = 2
-RETRY_BACKOFF_S = 1.0
+BAD_REQUEST_RETRIES = 4
+RETRY_BACKOFF_S = 5.0
+
+class RequestRejectedError(RuntimeError):
+    """
+    Raised when Together AI keeps answering a request with a 400 (that isn't a content refusal) after every retry -- eg:- its "Inference error occurred" on image edits. It's that one image that can't be drawn just now, so it fails alone rather than holding up the rest of a job.
+    """
+
+class ContentRefusedError(RuntimeError):
+    """
+    Raised when Together AI refuses a prompt under its safety policy. Unlike its occasional spurious 400s, this never succeeds on a retry -- the text has to change.
+    """
+
+def _is_content_refusal(error: BadRequestError) -> bool:
+    """
+    Tells a content-policy refusal apart from Together AI's spurious 400s, by what its message says.
+
+    Arguments:
+        error: BadRequestError - The 400 Together AI returned.
+
+    Returns:
+        bool - True if the prompt was refused for its content.
+    """
+    message = str(error).lower()
+    return "flagged" in message or "safety" in message
 
 def _generate_with_retry(kwargs: dict, sleep=time.sleep):
     """
     Low-level generation call to generate images, retrying on bad requests.
+
+    Raises a ContentRefusedError at once, without retrying, if the prompt is refused for its content.
     
     Arguments:
         kwargs: dict - Keyword arguments to be passed into the generate call.
@@ -144,8 +170,10 @@ def _generate_with_retry(kwargs: dict, sleep=time.sleep):
             logging.getLogger(__name__).info("Together generation took %.1fs", time.monotonic() - start)
             return response
         except BadRequestError as e:
+            if _is_content_refusal(e):
+                raise ContentRefusedError("Together AI refused to draw this prompt under its safety policy") from e
             if attempt == BAD_REQUEST_RETRIES:
-                raise
+                raise RequestRejectedError(f"Together AI kept rejecting the request: {e}") from e
             logging.getLogger(__name__).warning("Together 400 (attempt %d), retrying: %s", attempt + 1, e)
             sleep(RETRY_BACKOFF_S * (attempt + 1))
 

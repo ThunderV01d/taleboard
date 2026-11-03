@@ -10,6 +10,7 @@ import { Link, useNavigate } from "react-router"
 
 import { DeleteDialog } from "@/components/delete-dialog"
 import { NameDialog } from "@/components/name-dialog"
+import { NewProjectDialog } from "@/components/new-project-dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -21,15 +22,12 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  useCreateProject,
+  MAX_NAME_LENGTH,
   useDeleteProject,
   useProjects,
   useRenameProject,
   type Project,
 } from "@/lib/projects"
-
-/** Must match the API's limit on project names (ProjectIn) */
-const MAX_NAME_LENGTH = 200
 
 /** Which panel is open over the list, if any */
 type Panel =
@@ -44,7 +42,6 @@ type Panel =
 export function ProjectsPage() {
   const navigate = useNavigate()
   const projects = useProjects()
-  const createProject = useCreateProject()
   const renameProject = useRenameProject()
   const deleteProject = useDeleteProject()
   const [panel, setPanel] = useState<Panel>(null)
@@ -99,15 +96,8 @@ export function ProjectsPage() {
       )}
 
       {panel?.kind === "create" && (
-        <NameDialog
-          title="New project"
-          description="Give it a working title -- you can change it later."
-          maxLength={MAX_NAME_LENGTH}
-          submitLabel="Create"
-          onSubmit={async (name) => {
-            const project = await createProject.mutateAsync(name)
-            navigate(`/projects/${project.project_id}`)
-          }}
+        <NewProjectDialog
+          onCreated={(projectId) => navigate(`/projects/${projectId}`)}
           onClose={close}
         />
       )}

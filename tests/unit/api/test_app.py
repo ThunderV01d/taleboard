@@ -157,7 +157,7 @@ def test_no_route_lets_one_user_into_another_users_project(client, boards, metho
     client.post(f"/projects/{pid}/locations", json={"name": "Office"})
     scene = client.post(f"/projects/{pid}/scenes", json={"location_id": "office"}).json()["id"]
     shot = client.post(f"/projects/{pid}/scenes/{scene}/shots", json={}).json()["id"]
-    url = path.format(project_id=pid, scene_id=scene, shot_id=shot, entry_id="office")
+    url = path.format(project_id=pid, scene_id=scene, shot_id=shot, entry_id="office", job_id="any-job")
     _as("intruder")
 
     response = client.request(method, url)
@@ -231,13 +231,14 @@ def test_a_request_that_bypassed_lambda_has_no_user():
         get_user_id(Request({"type": "http", "method": "GET", "path": "/", "headers": []}))
 
 
-def test_the_api_never_loads_the_rendering_pipeline():
+def test_the_api_never_loads_the_image_models_or_the_story_breakdown():
     """
-    Verifies that importing the API doesn't import taleboard.rendering, which would load the image models on every API cold start.
+    Verifies that importing the API doesn't import background removal (which loads the image models) or the story breakdown -- either would slow every API cold start.
 
-    Runs in a fresh interpreter, as other tests in this process have already imported rendering.
+    Runs in a fresh interpreter, as other tests in this process have already imported them.
     """
-    check = "import sys, taleboard.api.app; sys.exit('taleboard.rendering' in ' '.join(sys.modules))"
+    heavy = ["taleboard.generation.background_removal", "rembg", "taleboard.parsing.story_breakdown"]
+    check = f"import sys, taleboard.api.app; sys.exit(any(name in sys.modules for name in {heavy!r}))"
     assert subprocess.run([sys.executable, "-c", check]).returncode == 0
 
 

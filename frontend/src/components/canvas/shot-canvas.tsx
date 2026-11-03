@@ -40,13 +40,17 @@ import {
   type PictureLayer,
 } from "@/lib/warp"
 
-/** Placeholder sizes (in frame pixels) for layers whose image hasn't been drawn or uploaded yet */
+/**
+ * Placeholder sizes (in frame pixels, before the layer's scale) for layers whose image hasn't been drawn or uploaded
+ * yet. Drawn characters are fitted to 1024 pixels tall and props to 512 pixels on their longer side, so a layer is
+ * about the same size before and after it's drawn.
+ */
 const PLACEHOLDER_SIZE: Record<
   "character" | "prop" | "image",
   [number, number]
 > = {
-  character: [280, 440],
-  prop: [200, 200],
+  character: [360, 1024],
+  prop: [512, 512],
   image: [300, 300],
 }
 

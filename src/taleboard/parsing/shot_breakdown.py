@@ -1,7 +1,7 @@
 """
-Manages the breakdown of paragraphs into shots.
+Manages the breakdown of a scene's paragraphs into shots.
 
-Includes helper functions to convert from the LLM-side to the domain-side, as well as constructing fallback shots in case of failure.
+Each paragraph is broken down knowing its scene, the scene's location (with what the camera sees facing each way), the cast and the props. Includes tidying up what the model returns, and constructing fallback shots in case of failure.
 
 Attributes:
     MAX_RETRIES: int - Number of extra rounds a shot gets -- LLM retries and judge rewrites alike -- before a fallback (or the judge's unchecked rewrite) is used.
@@ -16,9 +16,9 @@ from pydantic import ValidationError
 
 from taleboard.parsing.bedrock_caller import CallLLM
 from taleboard.parsing.contamination_judge import apply_shot_rewrites, judge_texts, shot_items
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMShotDraft, build_shot_draft_model
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMPropDraft, LLMSceneDraft, LLMShotDraft, build_shot_draft_model
 from taleboard.parsing.prompts import build_shot_breakdown_prompt
-from taleboard.schema.models import Region, Shot
+from taleboard.schema.enums import Facing
 
 MAX_RETRIES = 2
 
@@ -41,7 +41,9 @@ def get_shots_for_paragraph(
     previous_shot: LLMShotDraft | None,
     call_llm: CallLLM,
     call_judge: CallLLM | None = None,
-    locations: dict[str,LLMLocationDraft] | None = None,
+    props: dict[str,LLMPropDraft] | None = None,
+    scene: LLMSceneDraft | None = None,
+    location: LLMLocationDraft | None = None,
 ) -> list[ShotResult]:
     """
     Breaks one paragraph into shots that are then validated, and (with a judge) checked for text that would be drawn into the wrong image.
@@ -52,17 +54,19 @@ def get_shots_for_paragraph(
     Arguments:
         paragraph: str - Paragraph (in plain text).
         cast: dict[str,LLMCharacterDraft] - Mapping between character IDs and LLM character drafts.
-        previous_shot: LLMShotDraft - Previous generated shot; used for context retention between shots. Defaults to None (for first shot).
+        previous_shot: LLMShotDraft - The scene's last shot so far; used for continuity. None for a scene's first shot.
         call_llm: CallLLM - LLM caller function (usually comes from bedrock_caller or is mocked during testing).
         call_judge: CallLLM - LLM caller function for the contamination judge's output schema. Defaults to None (no judging).
-        locations: dict[str,LLMLocationDraft] - Mapping between location IDs and LLM location drafts; each shot's location_id must be one of them. Defaults to None (location_id isn't constrained).
+        props: dict[str,LLMPropDraft] - Mapping between prop IDs and LLM prop drafts; each shot's props must be among them. Defaults to None (the story has none).
+        scene: LLMSceneDraft - The scene the paragraph is in. Defaults to None (not given to the model).
+        location: LLMLocationDraft - The scene's location, whose views the model picks a facing from. Defaults to None (not given to the model).
 
     Returns:
         list[ShotResult] - List of LLM-drafted shots alongside review flags, in paragraph order.
     """
     cast_ids = list(cast.keys())
-    ShotModel = build_shot_draft_model(cast_ids, list(locations) if locations else None)
-    prompt = build_shot_breakdown_prompt(paragraph, cast, previous_shot, locations)
+    ShotModel = build_shot_draft_model(cast_ids, list(props) if props else None)
+    prompt = build_shot_breakdown_prompt(paragraph, cast, previous_shot, props, scene, location)
     pending = list(enumerate(_get_raw_shots(call_llm(prompt)))) # (slot, raw shot) -- the slot is the shot's place in the paragraph
     next_slot = len(pending)
 
@@ -74,7 +78,7 @@ def get_shots_for_paragraph(
         still_failing: list[tuple[int, dict, str]] = []
         passed: list[tuple[int, dict, LLMShotDraft]] = []
         for slot, raw_shot in pending:
-            raw_shot = _without_duplicate_regions(raw_shot) # Before validating, so judge rewrites (which index the raw regions) still line up
+            raw_shot = _tidied(raw_shot, props or {}) # Before validating, so judge rewrites (which index the raw regions) still line up
             try:
                 shot = ShotModel.model_validate(raw_shot)
             except ValidationError as e:
@@ -90,7 +94,7 @@ def get_shots_for_paragraph(
         # One judge call for every shot that passed this round
         rewrites = {}
         if call_judge is not None and passed:
-            rewrites = judge_texts([item for slot, _, shot in passed for item in shot_items(slot, shot, cast)], cast, call_judge)
+            rewrites = judge_texts([item for slot, _, shot in passed for item in shot_items(slot, shot, cast)], cast, call_judge, props)
 
         next_pending: list[tuple[int, dict]] = []
         for slot, raw_shot, shot in passed:
@@ -106,7 +110,7 @@ def get_shots_for_paragraph(
             # Retry timeout
             if attempt >= MAX_RETRIES:
                 for slot, _, _ in still_failing:
-                    results[slot] = ShotResult(shot=_fallback_shot(paragraph, _fallback_location_id(previous_shot, locations)), needs_review=True) # Since the shot failed even after all permitted retries, we need a human to review it manually
+                    results[slot] = ShotResult(shot=_fallback_shot(paragraph, previous_shot.facing if previous_shot else Facing.NORTH), needs_review=True) # Since the shot failed even after all permitted retries, we need a human to review it manually
             else:
                 # Retry -- the LLM returns the fixed shots in the order they were sent, so each goes back to its slot
                 retried = _get_raw_shots(call_llm(_build_retry_prompt([{"raw": raw, "error": error} for _, raw, error in still_failing])))
@@ -232,31 +236,56 @@ def _cast_leaks(shot: LLMShotDraft, cast: dict[str,LLMCharacterDraft]) -> list[s
     return problems
 
 
-def _without_duplicate_regions(raw_shot: dict) -> dict:
+def _tidied(raw_shot: dict, props: dict[str,LLMPropDraft]) -> dict:
     """
-    Drops any region for a character who already has one in the shot, keeping the first.
+    Tidies up a shot's characters and props before it's validated -- fixing what the model gets wrong in ways that don't mean anything, rather than sending it back for a retry (which costs nothing, and can never turn a good shot into a fallback):
 
-    A character can only be drawn once per shot (cutouts are keyed by character ID), so a second region would silently replace the first's pose. A duplicate is the model repeating itself rather than meaning anything, so it is dropped rather than sent back for a retry -- which costs nothing and can never turn a good shot into a fallback.
+    - a second region for a character who already has one is dropped (a character is drawn once per shot), keeping the first;
+    - a prop that isn't one of the story's, or is already in the shot, is dropped;
+    - a prop held by a character with no region in the shot is put down (held_by ""), so it stands in its own cell instead.
 
     Arguments:
         raw_shot: dict - The shot as the breakdown LLM returned it. Left as it is if it isn't shaped like a shot (validation reports that).
+        props: dict[str,LLMPropDraft] - Mapping between prop IDs and LLM prop drafts.
 
     Returns:
-        dict - The shot, with at most one region per character.
+        dict - The tidied shot (the same dict, if nothing needed tidying).
     """
-    regions = raw_shot.get("regions") if isinstance(raw_shot, dict) else None
-    if not isinstance(regions, list):
+    if not isinstance(raw_shot, dict):
         return raw_shot
+    tidied = dict(raw_shot)
+    regions = raw_shot.get("regions")
+    if isinstance(regions, list):
+        tidied["regions"] = _first_of_each(regions, "character_id")
+    shot_props = raw_shot.get("props")
+    if isinstance(shot_props, list):
+        in_shot = {r.get("character_id") for r in tidied.get("regions", []) if isinstance(r, dict)}
+        kept = []
+        for prop in _first_of_each([p for p in shot_props if not isinstance(p, dict) or p.get("prop_id") in props], "prop_id"):
+            if isinstance(prop, dict) and prop.get("held_by") and prop["held_by"] not in in_shot:
+                logging.getLogger(__name__).info("Put down %s, held by %s who isn't in the shot", prop.get("prop_id"), prop["held_by"])
+                prop = {**prop, "held_by": ""}
+            kept.append(prop)
+        if kept != shot_props:
+            logging.getLogger(__name__).info("Tidied the props of a shot: %s -> %s", shot_props, kept)
+        tidied["props"] = kept
+    return raw_shot if tidied == raw_shot else tidied
+
+
+def _first_of_each(entries: list, key: str) -> list:
+    """
+    The entries, keeping only the first with each value of key (entries that aren't dicts are kept, for validation to report).
+    """
     seen: set = set()
     kept = []
-    for region in regions:
-        character_id = region.get("character_id") if isinstance(region, dict) else None
-        if character_id is not None and character_id in seen:
-            logging.getLogger(__name__).info("Dropped a duplicate region for %s", character_id)
+    for entry in entries:
+        value = entry.get(key) if isinstance(entry, dict) else None
+        if value is not None and value in seen:
+            logging.getLogger(__name__).info("Dropped a duplicate %s %s", key, value)
             continue
-        seen.add(character_id)
-        kept.append(region)
-    return raw_shot if len(kept) == len(regions) else {**raw_shot, "regions": kept}
+        seen.add(value)
+        kept.append(entry)
+    return kept
 
 
 def _get_raw_shots(response_text: str) -> list[dict]:
@@ -300,79 +329,26 @@ def _build_retry_prompt(failures: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _fallback_location_id(previous_shot: LLMShotDraft | None, locations: dict[str,LLMLocationDraft] | None) -> str:
-    """
-    Picks the location a fallback shot is placed in -- wherever the story last was, which is the likeliest place for the failed shot too.
-
-    Arguments:
-        previous_shot: LLMShotDraft - Previous generated shot. None for the first shot.
-        locations: dict[str,LLMLocationDraft] - Mapping between location IDs and LLM location drafts. None if locations aren't known.
-
-    Returns:
-        str - The previous shot's location ID; or, failing that, the story's first location; or "unknown".
-    """
-    if previous_shot is not None:
-        return previous_shot.location_id
-    return next(iter(locations), "unknown") if locations else "unknown"
-
-
-def _fallback_shot(paragraph: str, location_id: str) -> LLMShotDraft:
+def _fallback_shot(paragraph: str, facing: Facing) -> LLMShotDraft:
     """
     Builds a safe, generic shot to be used when a real one couldn't be produced even after permitted retries.
 
-    No regions as we don't trust the failed data enough to place anyone,
-    so the user sees a blank panel to fill in by hand, not a wrong one.
+    No characters or props, as we don't trust the failed data enough to place anything -- so the user sees a background to fill in by hand, not a wrong panel.
 
     Arguments:
         paragraph: str - Failing paragraph (in plain text).
-        location_id: str - Location to place the shot in, so it still has a background.
-    
+        facing: Facing - The way the camera faces -- the scene's last shot's, so it shows the same side of the place.
+
     Returns:
-        LLMShotDraft - Fallback shot draft with generic details.
+        LLMShotDraft - Fallback shot draft.
     """
     # Realistically, none of these fields matter as a human will be reviewing them anyway.
     return LLMShotDraft(
         description=paragraph[:200], # Capped at our maximum description length
-        location_id=location_id,
+        facing=facing,
         details="",
         shot_size="medium",
         angle="eye_level",
         duration_s=2.0,
-        regions=[]
-    )
-
-def to_domain_shot(result: ShotResult, paragraph_index: int) -> Shot:
-    """
-    Converts a ShotResult to a domain Shot.
-
-    Appends a paragraph index to the Shot as well -- useful bookkeeping.
-
-    Arguments:
-        result: ShotResult - ShotResult object generated by the LLM and validated in this module.
-        paragraph_index: int - Index of the paragraph which the shot comes from. This is indexed against the entire story.
-
-    Returns:
-        Shot - Domain Shot object.    
-    """
-    draft = result.shot
-    regions = [
-        Region(
-            character_id=r.character_id,
-            position=r.position,
-            size=r.size,
-            orientation=r.orientation,
-            action=r.action
-        )
-        for r in draft.regions
-    ]
-    return Shot(
-        description=draft.description,
-        location_id=draft.location_id,
-        details=draft.details,
-        regions = regions,
-        paragraph_index=paragraph_index,
-        shot_size=draft.shot_size,
-        angle=draft.angle,
-        duration_s=draft.duration_s,
-        needs_review=result.needs_review
+        regions=[],
     )

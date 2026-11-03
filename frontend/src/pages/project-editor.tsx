@@ -1,8 +1,15 @@
-import { MapPinIcon, PackageIcon, UsersIcon } from "lucide-react"
+import {
+  LoaderCircleIcon,
+  MapPinIcon,
+  PackageIcon,
+  SparklesIcon,
+  UsersIcon,
+} from "lucide-react"
 import { lazy, Suspense, useState, type ReactNode } from "react"
 import { Link, useParams, useSearchParams } from "react-router"
 
 import { DeleteDialog } from "@/components/delete-dialog"
+import { GenerateAllDialog } from "@/components/editor/generate-all-dialog"
 import { SceneDialog } from "@/components/editor/scene-dialog"
 import { ScenePicker } from "@/components/editor/scene-picker"
 import { ShotDeck } from "@/components/editor/shot-deck"
@@ -10,6 +17,16 @@ import { ShotDialog } from "@/components/editor/shot-dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  busyShots,
+  isActive,
+  latestImport,
+  layerProgress,
+  useFollowJobs,
+  useGenerate,
+  useJobs,
+  type GenerationJob,
+} from "@/lib/generation"
 import { useProject } from "@/lib/projects"
 import { useCharacters, useLocations, useProps } from "@/lib/registries"
 import {
@@ -39,6 +56,7 @@ type Panel =
   | { kind: "deleteScene"; scene: Scene }
   | { kind: "newShot" }
   | { kind: "deleteShot"; shot: Shot; number: number }
+  | { kind: "generateAll" }
   | null
 
 /**
@@ -57,6 +75,13 @@ export function ProjectEditorPage() {
   const characters = useCharacters(projectId)
   const props = useProps(projectId)
   const [panel, setPanel] = useState<Panel>(null)
+  const jobs = useJobs(projectId)
+  const generate = useGenerate(projectId)
+  const jobList = jobs.data ?? []
+  useFollowJobs(projectId, jobList)
+  const progress = layerProgress(jobList)
+  const drawing = busyShots(jobList)
+  const lastImport = latestImport(jobList)
   // Where the open shot's editor puts its undo/redo and save status (in the toolbar row, left of the scene picker)
   const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null)
   const close = () => setPanel(null)
@@ -118,6 +143,18 @@ export function ProjectEditorPage() {
           onDelete={(s) => setPanel({ kind: "deleteScene", scene: s })}
         />
         <div className="flex justify-end gap-2">
+          <Button
+            size="sm"
+            title="Draw every layer in the project that isn't drawn yet, or has changed since"
+            onClick={() => setPanel({ kind: "generateAll" })}
+          >
+            {drawing.size > 0 ? (
+              <LoaderCircleIcon className="animate-spin" />
+            ) : (
+              <SparklesIcon />
+            )}
+            Generate everything
+          </Button>
           <Button variant="outline" size="sm" asChild>
             <Link to={`/projects/${projectId}/characters`}>
               <UsersIcon />
@@ -147,7 +184,13 @@ export function ProjectEditorPage() {
       )}
 
       {!scene ? (
-        <EmptyState>Add a scene to start laying out shots.</EmptyState>
+        lastImport && isActive(lastImport) ? (
+          <Importing job={lastImport} />
+        ) : lastImport?.status === "failed" ? (
+          <ImportFailed job={lastImport} />
+        ) : (
+          <EmptyState>Add a scene to start laying out shots.</EmptyState>
+        )
       ) : shots.isPending ? (
         <Skeleton className="m-4 flex-1" />
       ) : shot ? (
@@ -162,6 +205,9 @@ export function ProjectEditorPage() {
             props={props.data ?? []}
             locations={locations.data ?? []}
             toolbarSlot={toolbarSlot}
+            progress={progress}
+            drawing={drawing.has(shot.id)}
+            onGenerate={(target) => generate.mutateAsync(target)}
           />
         </Suspense>
       ) : (
@@ -174,6 +220,7 @@ export function ProjectEditorPage() {
         <footer className="shrink-0 border-t px-3 pt-1">
           <ShotDeck
             shots={shotList}
+            drawing={drawing}
             selectedId={shot?.id ?? null}
             onSelect={(s) => select(scene.id, s.id)}
             onNew={() => setPanel({ kind: "newShot" })}
@@ -216,6 +263,13 @@ export function ProjectEditorPage() {
           onClose={close}
         />
       )}
+      {panel?.kind === "generateAll" && (
+        <GenerateAllDialog
+          projectId={projectId}
+          onGenerate={() => generate.mutateAsync({})}
+          onClose={close}
+        />
+      )}
       {panel?.kind === "deleteShot" && scene && (
         <DeleteShotDialog
           projectId={projectId}
@@ -232,6 +286,51 @@ export function ProjectEditorPage() {
 /**
  * A dashed box with a hint, where the shot would be.
  */
+/**
+ * Shown in place of the editor while a story is being imported into the (still empty) project.
+ */
+function Importing({ job }: { job: GenerationJob }) {
+  return (
+    <EmptyState>
+      <div className="flex max-w-md flex-col items-center gap-2">
+        <LoaderCircleIcon className="size-6 animate-spin" />
+        <p className="font-medium text-foreground">
+          {job.status === "queued"
+            ? "Your story is waiting to be read..."
+            : "Reading your story..."}
+        </p>
+        <p className="text-sm">
+          It's being broken down into characters, props, places, scenes and
+          shots -- this takes a few minutes, and carries on if you leave this
+          page.
+          {job.draw &&
+            " Then every layer is drawn, and each shot fills in as it's done."}
+        </p>
+      </div>
+    </EmptyState>
+  )
+}
+
+/**
+ * Shown in place of the editor when the project's story import failed -- the project is still there, empty.
+ */
+function ImportFailed({ job }: { job: GenerationJob }) {
+  return (
+    <div className="m-4 flex flex-1 items-center justify-center">
+      <Alert variant="destructive" className="max-w-lg">
+        <AlertTitle>Couldn't import the story</AlertTitle>
+        <AlertDescription>
+          <p>{job.error ?? "Something went wrong breaking it down."}</p>
+          <p>
+            The project is still here, empty -- add scenes by hand, or start a
+            new project to try the story again.
+          </p>
+        </AlertDescription>
+      </Alert>
+    </div>
+  )
+}
+
 function EmptyState({ children }: { children: ReactNode }) {
   return (
     <div className="m-4 flex flex-1 items-center justify-center rounded-lg border border-dashed p-6 text-center text-muted-foreground">

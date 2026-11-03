@@ -5,14 +5,16 @@ The registries own what things look like; shots only refer to them by ID, and ow
 """
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
 from taleboard.schema.base import Model
-from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
+from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, Setting, ShotSize, TimeOfDay
 from taleboard.schema.layers import GenerationContext, GroupLayer, Layer
 
+# One side of a location, in words -- short, as it's drawn alongside the location's description
+View = Annotated[str, Field(max_length=200)]
 
 class Reference(Model):
     """
@@ -61,16 +63,23 @@ class Location(Model):
     """
     A place in the project's registry. Every scene set there is drawn from its plates.
 
+    Its description covers what the whole place has in common (what it's built of, its size and feel), and each of its views what's on one side of it -- so each facing's plate shows only that side, and every facing still looks like the same place. A facing without a view shows the north plate, as there is nothing to say what's there.
+
     Attributes:
         id: str - Unique ID of the location, made from its name.
         name: str - Short name of the place.
-        description: str - What it looks like, empty, in words.
+        description: str - What the whole empty place has in common, in words. Defaults to "".
+        setting: Setting - Whether the place is indoors or out. Defaults to INT.
+        views: dict[Facing,str] - What's on each side of the place (eg:- north: "the back wall: a two-pane window behind a desk"). Defaults to {}.
         plates: dict[Facing,str] - S3 key of the plate for each facing needed so far -- added the first time a shot needs one. Defaults to {}.
     """
     id: str
     name: str
     description: str = Field(default="", max_length=300)
+    setting: Setting = Setting.INT
+    views: dict[Facing, View] = Field(default_factory=dict)
     plates: dict[Facing, str] = Field(default_factory=dict)
+
 
 class Scene(Model):
     """

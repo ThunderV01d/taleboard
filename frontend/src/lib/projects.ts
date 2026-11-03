@@ -11,6 +11,9 @@ import { api, ensureOk, unwrap } from "@/lib/api"
 
 export type Project = components["schemas"]["Project"]
 
+/** Must match the API's limit on project names (ProjectIn) */
+export const MAX_NAME_LENGTH = 200
+
 /** Cache keys: the list, and one project by ID */
 export const projectKeys = {
   all: ["projects"] as const,

@@ -4,34 +4,30 @@ Shared fixtures for unit tests that need AWS -- runs against moto's in-memory fa
 Attributes:
     TABLE: str - Name of the fake DynamoDB table.
     BUCKET: str - Name of the fake S3 bucket.
-    QUEUE: str - Name of the fake SQS queue.
+    QUEUE: str - Name of the fake generation queue (FIFO).
     REGION: str - AWS Region of all three.
 """
 import boto3
 import pytest
 from moto import mock_aws
 
-from taleboard.jobs.queue import JobQueue
-from taleboard.storage.project_store import PROJECTS_INDEX, ProjectStore
+from taleboard.storage.storyboard_store import PROJECTS_INDEX
 
 TABLE = "taleboard-test"
 BUCKET = "taleboard-test-images"
-QUEUE = "taleboard-test-jobs"
+QUEUE = "taleboard-test-generation.fifo"
 REGION = "eu-west-2"
 
 
 @pytest.fixture
 def aws(monkeypatch):
     """
-    Creates a fake table (with the projects index), bucket and queue, and points the TALEBOARD_* environment variables at them.
+    Creates a fake table (with the projects index), bucket and generation queue (FIFO), and points the TALEBOARD_* environment variables at them.
 
     Fake credentials are set so that nothing can ever reach a real AWS account.
 
     Arguments:
         monkeypatch: pytest.MonkeyPatch - Used to set fake credentials and environment variables.
-
-    Returns:
-        tuple[ProjectStore,JobQueue] - A store and a queue backed by the fakes.
     """
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
         monkeypatch.setenv(name, "testing")
@@ -48,38 +44,10 @@ def aws(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         boto3.client("s3", region_name=REGION).create_bucket(Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION})
-        queue_url = boto3.client("sqs", region_name=REGION).create_queue(QueueName=QUEUE)["QueueUrl"]
+        queue_url = boto3.client("sqs", region_name=REGION).create_queue(QueueName=QUEUE, Attributes={"FifoQueue": "true"})["QueueUrl"]
         monkeypatch.setenv("TALEBOARD_TABLE", TABLE)
         monkeypatch.setenv("TALEBOARD_BUCKET", BUCKET)
-        monkeypatch.setenv("TALEBOARD_QUEUE_URL", queue_url)
+        monkeypatch.setenv("TALEBOARD_GENERATION_QUEUE_URL", queue_url)
         monkeypatch.setenv("AWS_REGION", REGION)
         monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)  # Region-less clients (eg:- the worker's SSM client) read this one, not AWS_REGION
-        yield ProjectStore(TABLE, BUCKET, REGION), JobQueue(queue_url, REGION)
-
-
-@pytest.fixture
-def store(aws):
-    """
-    The fake-backed store.
-
-    Arguments:
-        aws: tuple[ProjectStore,JobQueue] - The shared fakes.
-
-    Returns:
-        ProjectStore - A store backed by the fakes.
-    """
-    return aws[0]
-
-
-@pytest.fixture
-def queue(aws):
-    """
-    The fake-backed queue.
-
-    Arguments:
-        aws: tuple[ProjectStore,JobQueue] - The shared fakes.
-
-    Returns:
-        JobQueue - A queue backed by the fakes.
-    """
-    return aws[1]
+        yield

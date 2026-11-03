@@ -15,12 +15,10 @@ export function LandingPage() {
       <Logo className="h-20 sm:h-28" />
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-          From story to storyboard
+          Take your stories and turn them into storyboards!
         </h1>
         <p className="text-lg text-muted-foreground">
-          Break a story into scenes and shots, then block out every panel
-          yourself: place characters, props and captions on a layered canvas,
-          and only ask the AI to draw the parts you choose.
+          With full control of your shots, scenes, locations, characters and props. Don't want to use AI? TaleBoard allows you to do everything manually -- you are in control at all times.
         </p>
       </div>
       {/* One way in: the sign-in page also offers Google (which signs up too) and a link to sign up */}
@@ -28,7 +26,7 @@ export function LandingPage() {
         {auth.status === "signedIn" ? (
           <Link to="/projects">My projects</Link>
         ) : (
-          <Link to="/login">Get started</Link>
+          <Link to="/signup">Get started</Link>
         )}
       </Button>
     </section>

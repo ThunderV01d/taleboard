@@ -4,9 +4,9 @@ CDK stack for the TaleBoard backend: storage, the job queue, and the API, worker
 Attributes:
     REPO_ROOT: Path - Repository root, the worker image's build context.
     SRC_DIR: Path - Source folder bundled into the API and dead-letter Lambdas (with src/requirements.txt).
-    PROJECTS_INDEX: str - Name of the sparse project-listing GSI (must match taleboard.storage.project_store).
+    PROJECTS_INDEX: str - Name of the sparse project-listing GSI (must match taleboard.storage.storyboard_store).
     TOGETHER_KEY_PARAMETER: str - Name of the SSM SecureString holding the Together AI API key (created by hand).
-    MAX_ATTEMPTS: int - Deliveries before a job is dead-lettered (must match taleboard.jobs.worker.MAX_ATTEMPTS).
+    MAX_ATTEMPTS: int - Deliveries before a job is dead-lettered (must match taleboard.jobs.generation_worker.MAX_ATTEMPTS).
     HAIKU_PROFILE_ID: str - Bedrock EU cross-region inference profile used by the story breakdown.
     HAIKU_MODEL_ID: str - Foundation model behind that profile.
     GOOGLE_CLIENT_ID: str - Google OAuth client ID (not a secret -- it appears in every Google sign-in URL).
@@ -81,12 +81,13 @@ class TaleboardStack(Stack):
             )],
         )
 
-        # Job queue -- visibility outlasts the worker's 15-minute timeout, and matches the 16-minute job lease
-        dead_letters = sqs.Queue(self, "DeadLetters", retention_period=Duration.days(14), enforce_ssl=True)        
-        jobs = sqs.Queue(
-            self, "Jobs",
+        # Generation job queue -- FIFO, grouped by project, so a project's jobs run one at a time and in order
+        generation_dead_letters = sqs.Queue(self, "GenerationDeadLetters", fifo=True, retention_period=Duration.days(14), enforce_ssl=True)
+        generation_jobs = sqs.Queue(
+            self, "GenerationJobs",
+            fifo=True,
             visibility_timeout=Duration.minutes(16),
-            dead_letter_queue=sqs.DeadLetterQueue(queue=dead_letters, max_receive_count=MAX_ATTEMPTS),
+            dead_letter_queue=sqs.DeadLetterQueue(queue=generation_dead_letters, max_receive_count=MAX_ATTEMPTS),
             enforce_ssl=True,
         )
 
@@ -185,7 +186,7 @@ class TaleboardStack(Stack):
             timeout=Duration.minutes(15),
             environment={
                 **storage_env,
-                "TALEBOARD_QUEUE_URL": jobs.queue_url,
+                "TALEBOARD_GENERATION_QUEUE_URL": generation_jobs.queue_url,
                 "TOGETHER_API_KEY_PARAMETER": together_key.parameter_name,
             },
             log_group=self._log_group("Worker"),
@@ -198,7 +199,7 @@ class TaleboardStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             memory_size=512,
             timeout=Duration.seconds(15),
-            environment={**storage_env, "TALEBOARD_QUEUE_URL": jobs.queue_url},
+            environment={**storage_env, "TALEBOARD_GENERATION_QUEUE_URL": generation_jobs.queue_url},
             bundling=BundlingOptions(asset_excludes=["__pycache__", "*.egg-info"]),
             log_group=self._log_group("Api"),
         )
@@ -215,15 +216,15 @@ class TaleboardStack(Stack):
         )
 
         # max_concurrency caps parallel renders (2 is the minimum SQS allows) -- a cost guard, not a throughput setting
-        worker.add_event_source(event_sources.SqsEventSource(jobs, batch_size=1, max_concurrency=2))
-        dead_letter_fn.add_event_source(event_sources.SqsEventSource(dead_letters, batch_size=1))
+        worker.add_event_source(event_sources.SqsEventSource(generation_jobs, batch_size=1, max_concurrency=2))
+        dead_letter_fn.add_event_source(event_sources.SqsEventSource(generation_dead_letters, batch_size=1))
 
         # Permissions (consuming a queue already grants sqs:ChangeMessageVisibility; the SecureStrings use the AWS-managed aws/ssm key, so no explicit kms:Decrypt is needed)
         for fn in (api_fn, worker, dead_letter_fn):
             table.grant_read_write_data(fn)
         for fn in (api_fn, worker):
             bucket.grant_read_write(fn, "projects/*")
-            jobs.grant_send_messages(fn)  # API enqueues; worker self-continues
+            generation_jobs.grant_send_messages(fn) # API enqueues; worker self-continues
         together_key.grant_read(worker)
         worker.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
@@ -262,19 +263,19 @@ class TaleboardStack(Stack):
         )
 
         # Alarm -- the dead-letter Lambda drains the DLQ at once, so alarm on messages received, not messages visible
-        alarm = cloudwatch.Alarm(
-            self, "DeadLetterAlarm",
-            metric=dead_letters.metric_number_of_messages_received(period=Duration.minutes(5), statistic="Sum"),
+        generation_alarm = cloudwatch.Alarm(
+            self, "GenerationDeadLetterAlarm",
+            metric=generation_dead_letters.metric_number_of_messages_received(period=Duration.minutes(5), statistic="Sum"),
             threshold=1,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description="A render job exhausted its retries and was dead-lettered.",
+            alarm_description="A genneration job exhausted its retries and was dead-lettered."
         )
         if alarm_email:
             topic = sns.Topic(self, "Alerts")
             topic.add_subscription(subscriptions.EmailSubscription(alarm_email))
-            alarm.add_alarm_action(cw_actions.SnsAction(topic))
+            generation_alarm.add_alarm_action(cw_actions.SnsAction(topic))
 
         CfnOutput(self, "ApiUrl", value=stage.url)
         CfnOutput(self, "TableName", value=table.table_name)

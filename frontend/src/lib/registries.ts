@@ -37,11 +37,16 @@ export function isRegistryKind(
   return value !== undefined && value in REGISTRY_NAMES
 }
 
-/** An entry's editable fields (aliases are characters' only) */
+/** What's on each side of a location, by compass facing */
+export type Views = Partial<Record<Schemas["Facing"], string>>
+
+/** An entry's editable fields (aliases are characters' only; setting and views, locations') */
 export type EntryFields = {
   name: string
   description: string
   aliases?: string[]
+  setting?: Schemas["Setting"]
+  views?: Views
 }
 
 /** What happens to a location's scenes when it's deleted */
@@ -88,7 +93,7 @@ async function createEntry(
   kind: RegistryKind,
   fields: EntryFields
 ): Promise<Entry> {
-  const { aliases, ...common } = fields
+  const { aliases, setting, views, ...common } = fields
   switch (kind) {
     case "characters":
       return unwrap(
@@ -101,7 +106,7 @@ async function createEntry(
       return unwrap(
         await api.POST("/projects/{project_id}/locations", {
           params: path(projectId),
-          body: common,
+          body: { ...common, setting: setting ?? "interior", views },
         })
       )
     case "props":
@@ -120,7 +125,7 @@ async function editEntry(
   entryId: string,
   fields: EntryFields
 ): Promise<Entry> {
-  const { aliases, ...common } = fields
+  const { aliases, setting, views, ...common } = fields
   const params = entryPath(projectId, entryId)
   switch (kind) {
     case "characters":
@@ -134,7 +139,7 @@ async function editEntry(
       return unwrap(
         await api.PATCH("/projects/{project_id}/locations/{entry_id}", {
           params,
-          body: common,
+          body: { ...common, setting, views },
         })
       )
     case "props":
@@ -313,11 +318,12 @@ export function entryImages(
     orientations: Record<string, string>
     facings: Record<string, string>
   }
-): { label: string; url: string | null; sketched: boolean }[] {
+): { label: string; facing?: string; url: string | null; sketched: boolean }[] {
   if (kind === "locations") {
     const plates = (entry as Location).plates
     return Object.entries(labels.facings).map(([facing, label]) => ({
       label,
+      facing,
       url: plates[facing] ? (entry.image_urls[plates[facing]] ?? null) : null,
       sketched: false,
     }))

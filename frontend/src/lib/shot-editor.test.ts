@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 
 import { newTextLayer, removeLayers, type Layer } from "@/lib/layers"
 import {
+  onlyDrawnSince,
   editorReducer,
   initialState,
   isDirty,
@@ -191,5 +192,85 @@ describe("the canvas editor's state", () => {
       loaded.past.length,
       loaded.baseline.version,
     ]).toEqual(["", 0, 5])
+  })
+})
+
+describe("merging what generation drew", () => {
+  const background = (image: string | null): Layer =>
+    ({
+      ...newTextLayer(),
+      type: "background",
+      id: "bg",
+      name: "Background",
+      facing: "north",
+      image,
+      corners: null,
+      last_generated_params: image ? ({ facing: "north" } as never) : null,
+    }) as unknown as Layer
+
+  it("tells a generation save from someone's edit", () => {
+    const loaded = shot([background(null)], 1)
+    const drawn = shot([background("plates/north.png")], 2)
+    const edited = { ...drawn, description: "someone else's edit" }
+
+    expect(onlyDrawnSince(loaded, drawn)).toBe(true)
+    expect(onlyDrawnSince(loaded, edited)).toBe(false)
+  })
+
+  it("brings the image into the draft, keeps the user's edits, and saves over the new version", () => {
+    const loaded = shot([background(null)], 1)
+    const edited = run(initialState(loaded), {
+      type: "edit",
+      change: rename("typed while it was being drawn"),
+    })
+
+    const merged = run(edited, {
+      type: "merge",
+      shot: shot([background("plates/north.png")], 2),
+    })
+
+    expect((merged.draft.layers[0] as { image: string }).image).toBe(
+      "plates/north.png"
+    )
+    expect(merged.draft.fields.description).toBe(
+      "typed while it was being drawn"
+    )
+    expect(isDirty(merged)).toBe(true)
+    expect(toSaveBody(merged).version).toBe(2)
+  })
+
+  it("puts the image into the undo history too, so undoing never takes it away", () => {
+    const loaded = shot([background(null)], 1)
+    const edited = run(
+      initialState(loaded),
+      { type: "edit", change: rename("a") },
+      { type: "edit", change: rename("ab") }
+    )
+
+    const merged = run(edited, {
+      type: "merge",
+      shot: shot([background("plates/north.png")], 2),
+    })
+    const undone = run(merged, { type: "undo" }, { type: "undo" })
+
+    expect((undone.draft.layers[0] as { image: string }).image).toBe(
+      "plates/north.png"
+    )
+    expect(isDirty(undone)).toBe(false)
+  })
+
+  it("leaves a layer deleted meanwhile deleted", () => {
+    const loaded = shot([background(null)], 1)
+    const deleted = run(initialState(loaded), {
+      type: "edit",
+      change: (draft) => ({ ...draft, layers: [] }),
+    })
+
+    const merged = run(deleted, {
+      type: "merge",
+      shot: shot([background("plates/north.png")], 2),
+    })
+
+    expect(merged.draft.layers).toEqual([])
   })
 })

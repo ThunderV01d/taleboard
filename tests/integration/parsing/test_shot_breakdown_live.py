@@ -11,7 +11,7 @@ import pytest
 
 from taleboard.parsing.bedrock_caller import make_bedrock_caller
 from taleboard.parsing.cast_extraction import assign_ids
-from taleboard.parsing.llm_schemas import LLMCharacterDraft, build_paragraph_output_model
+from taleboard.parsing.llm_schemas import LLMCharacterDraft, LLMLocationDraft, LLMPropDraft, LLMSceneDraft, build_paragraph_output_model
 from taleboard.parsing.shot_breakdown import get_shots_for_paragraph
 
 MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -100,3 +100,38 @@ def test_continuity_preserved_across_paragraphs():
     for char_id, position in previous_positions.items():
         if char_id in new_positions:
             assert new_positions[char_id] == position
+
+
+@pytest.mark.integration
+def test_a_held_prop_is_its_own_entry_and_the_hand_holds_nothing():
+    """
+    Verifies, in a scene with a location and props: the letter Mara reads is a prop she holds, her action names no object, and the shot faces one of the location's sides. Prints the shots, for reading through.
+    """
+    cast = assign_ids([LLMCharacterDraft(name="Mara", description="a woman in her sixties, short grey hair, heavy oilskin coat")])
+    props = {
+        "letter": LLMPropDraft(name="Letter", description="a folded letter of cream paper"),
+        "lantern": LLMPropDraft(name="Lantern", description="an old brass storm lantern"),
+    }
+    location = LLMLocationDraft(name="Lamp Room", setting="interior", description="a round lighthouse lamp room with whitewashed stone walls", views={
+        "north": "the front of the room: the great lens on its pedestal before a tall window",
+        "east": "a side wall: a curved window with a hook beside it",
+        "south": "the back of the room: the top of the spiral stairs",
+        "west": "the other side wall: shelves of spare brass fittings",
+    })
+    scene = LLMSceneDraft(first_paragraph=0, location_id="lamp_room", time_of_day="night", atmosphere="stormy", name="The lamp room at night", description="Mara reads the letter.")
+    call_llm = make_bedrock_caller(model_id=MODEL_ID, schema_model=build_paragraph_output_model(list(cast), list(props)), region_name=REGION)
+
+    results = get_shots_for_paragraph(
+        "Mara took the letter, turned it over, and read it by the light of the lantern hanging on its hook.",
+        cast, None, call_llm, props=props, scene=scene, location=location,
+    )
+
+    for result in results:
+        print(result.shot.model_dump_json(indent=1))
+    assert all(not result.needs_review for result in results)
+    held = [(p.prop_id, p.held_by) for result in results for p in result.shot.props]
+    assert ("letter", "mara") in held
+    for result in results:
+        for region in result.shot.regions:
+            assert "letter" not in region.action.lower() and "lantern" not in region.action.lower()
+

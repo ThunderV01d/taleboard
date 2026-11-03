@@ -1,5 +1,5 @@
 """
-Persists v0.2.0 projects -- their registries, scenes and shots -- in the same DynamoDB table and S3 bucket as project_store.py.
+Persists projects -- their registries, scenes and shots -- in one DynamoDB table and one S3 bucket.
 
 Every item of a project shares the partition key PROJECT#{project_id}. The sort key says what each item is:
 
@@ -9,12 +9,18 @@ Every item of a project shares the partition key PROJECT#{project_id}. The sort 
     LOCATION#{location_id}           - a location's registry entry
     SCENE#{scene_id}                 - a scene
     SHOT#{scene_id}#{shot_id}        - a shot, its layer graph included
+    JOB#{job_id}                     - a generation job, its tasks included
 
 A shot's sort key starts with its scene's ID, so one query loads a whole scene's shots.
+
+Generated images are stored in S3 under projects/{project_id}/generated/{kind}/{hash}.png, where the hash is of everything the image was generated from (see generated_key) -- so no item is needed to find one again.
 """
+import hashlib
 import itertools
+import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import TypeVar
 
 import boto3
@@ -22,10 +28,51 @@ from botocore.config import Config
 from boto3.dynamodb.conditions import Key
 
 from taleboard.parsing.cast_extraction import slugify
+from taleboard.schema.generation import GenerationJob, JobStatus, TaskStatus
+from taleboard.schema.layers import GeneratedLayer
 from taleboard.schema.storyboard import Character, Location, Project, Prop, Scene, Shot
-from taleboard.storage.project_store import DEFAULT_REGION, PROJECTS_INDEX, _item_fields, _to_dynamo, project_pk
 
 Entry = TypeVar("Entry", Character, Prop, Location)
+
+DEFAULT_REGION = "eu-west-2"
+PROJECTS_INDEX = "projects-by-created-at"  # Sparse GSI: only METADATA items carry its keys
+
+
+def project_pk(project_id: str) -> str:
+    """
+    Builds a project's partition key.
+
+    Arguments:
+        project_id: str - Unique project ID.
+
+    Returns:
+        str - Partition key, eg:- "PROJECT#3f2a...".
+    """
+    return f"PROJECT#{project_id}"
+
+def _to_dynamo(data: dict) -> dict:
+    """
+    Converts JSON-ready data into a form boto3 accepts for DynamoDB -- floats become Decimals, as DynamoDB rejects Python floats.
+
+    Arguments:
+        data: dict - JSON-ready data (eg:- from model_dump(mode="json")).
+
+    Returns:
+        dict - The same data, with every float as a Decimal.
+    """
+    return json.loads(json.dumps(data), parse_float=Decimal)
+
+def _item_fields(item: dict) -> dict:
+    """
+    Strips the table's key attributes from an item, leaving only the model's own fields.
+
+    Arguments:
+        item: dict - A DynamoDB item.
+
+    Returns:
+        dict - The item without PK and SK.
+    """
+    return {k: v for k, v in item.items() if k not in ("PK", "SK")}
 
 _REGISTRY_PREFIXES: dict[type, str] = {
     Character: "CHARACTER#",
@@ -64,6 +111,18 @@ class ShotConflictError(Exception):
         super().__init__(f"Shot {shot_id!r} has changed since it was loaded (now at version {current_version})")
         self.current_version = current_version
 
+def story_sk(job_id: str) -> str:
+    """
+    Builds a story's sort key.
+
+    Arguments:
+        job_id: str - Unique ID of the story.
+
+    Returns:
+        str - Sort key, eg:- "STORY#3f2a...".
+    """
+    return f"STORY#{job_id}"
+
 def scene_sk(scene_id: str) -> str:
     """
     Builds a scene's sort key.
@@ -89,6 +148,18 @@ def shot_sk(scene_id: str, shot_id: str) -> str:
     """
     return f"SHOT#{scene_id}#{shot_id}"
 
+def job_sk(job_id: str) -> str:
+    """
+    Builds a generation job's sort key.
+
+    Arguments:
+        job_id: str - Unique ID of the job.
+
+    Returns:
+        str - The sort key.
+    """
+    return f"JOB#{job_id}"
+
 def owner_index_key(owner_id: str) -> str:
     """
     Builds the projects index's partition key for one user, so listing their projects is a single query.
@@ -100,6 +171,22 @@ def owner_index_key(owner_id: str) -> str:
         str - The index partition key.
     """
     return f"OWNER#{owner_id}"
+
+def generated_key(project_id: str, kind: str, inputs: dict) -> str:
+    """
+    The S3 key a generated image is stored at. The same inputs always give the same key, so finding an image that was already generated is a single lookup -- and changing anything that went into it (a description, an action, the image it was drawn from) gives a new key, so an out-of-date image is never reused.
+
+    Arguments:
+        project_id: str - Unique project ID.
+        kind: str - What sort of image it is (eg:- "plate", "framing", "pose"), kept in the key so the bucket stays readable.
+        inputs: dict - Everything the image was generated from, eg:- its prompt and the keys of any images it was drawn from. Must be JSON-serialisable; key order doesn't matter.
+
+    Returns:
+        str - The S3 key: projects/{project_id}/generated/{kind}/{hash}.png
+    """
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",",":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    return f"projects/{project_id}/generated/{kind}/{digest}.png"
 
 class StoryboardStore:
     """
@@ -297,6 +384,31 @@ class StoryboardStore:
             ExpiresIn=expires_in,
         )
 
+    def get_image(self, s3_key: str) -> bytes | None:
+        """
+        Downloads an image, if there is one at this key.
+
+        Arguments:
+            s3_key: str - S3 key of the image.
+
+        Returns:
+            bytes - The image (PNG, in bytes), or None if nothing is stored there.
+        """
+        try:
+            return self._s3.get_object(Bucket=self._bucket, Key=s3_key)["Body"].read()
+        except self._s3.exceptions.NoSuchKey:
+            return None
+
+    def put_image(self, s3_key: str, image: bytes) -> None:
+        """
+        Uploads an image, replacing anything already at this key.
+
+        Arguments:
+            s3_key: str - S3 key to store it at.
+            image: bytes - The image (PNG, in bytes).
+        """
+        self._s3.put_object(Bucket=self._bucket, Key=s3_key, Body=image, ContentType="image/png")
+
     def list_entries(self, project_id: str, model: type[Entry]) -> list[Entry]:
         """
         Lists every entry in one of a project's registries.
@@ -366,6 +478,34 @@ class StoryboardStore:
         """
         try:
             self._table.put_item(Item=self._entry_item(project_id, entry), ConditionExpression="attribute_exists(PK)")
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            raise KeyError(f"No {type(entry).__name__.lower()} {entry.id!r} in project {project_id!r}") from None
+
+    def save_entry_image(self, project_id: str, entry: Character | Prop | Location, slot: str) -> None:
+        """
+        Saves one of an entry's images -- a location's plate for one facing, or a character's or prop's reference for one orientation -- and nothing else about it.
+
+        Generation records each image as soon as it exists, while the user may be editing the same entry; writing only this one slot never undoes their edit (as saving the whole entry would).
+
+        Raises a KeyError if the entry doesn't exist (eg:- it was deleted while the image was being generated).
+
+        Arguments:
+            project_id: str - Unique project ID.
+            entry: Character|Prop|Location - The entry, holding the image to save.
+            slot: str - The facing (for a location) or orientation (otherwise) of the image, eg:- "north".
+        """
+        if isinstance(entry, Location):
+            field, value = "plates", entry.plates[slot]
+        else:
+            field, value = "references", entry.references[slot].model_dump(mode="json")
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": registry_sk(type(entry), entry.id)},
+                UpdateExpression="SET #field.#slot = :value",
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#field": field, "#slot": slot},
+                ExpressionAttributeValues={":value": _to_dynamo({"value": value})["value"]},
+            )
         except self._table.meta.client.exceptions.ConditionalCheckFailedException:
             raise KeyError(f"No {type(entry).__name__.lower()} {entry.id!r} in project {project_id!r}") from None
 
@@ -557,6 +697,46 @@ class StoryboardStore:
             raise ShotConflictError(shot.id, current.version) from None
         return saved
 
+    def save_generated_layer(self, project_id: str, scene_id: str, shot_id: str, layer: GeneratedLayer, attempts: int = 5) -> bool:
+        """
+        Saves a newly generated image into a shot -- the layer's image and last_generated_params, and nothing else, so an edit the user made meanwhile is never lost.
+
+        The shot may be saved by the editor at any moment, so this reloads it and tries again whenever it was saved in between (each try is version-checked, like any save).
+
+        If the user changed what the layer depends on while it was being drawn, the image is still saved, with the params it was really drawn from -- so the layer simply shows as needing regeneration.
+
+        Raises a ShotConflictError if the shot kept changing for every attempt.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            scene_id: str - Unique ID of the shot's scene.
+            shot_id: str - Unique ID of the shot.
+            layer: GeneratedLayer - The layer as generated: its ID, image and last_generated_params are what's saved.
+            attempts: int - Saves to try before giving up. Defaults to 5.
+
+        Returns:
+            bool - True if it was saved; False if the shot, or the layer (by ID and type), no longer exists.
+        """
+        for attempt in range(attempts):
+            try:
+                shot = self.get_shot(project_id, scene_id, shot_id)
+            except KeyError:
+                return False
+            stored = next((l for l in shot.all_layers() if l.id == layer.id), None)
+            if stored is None or stored.type != layer.type:
+                return False
+            stored.image = layer.image
+            stored.last_generated_params = layer.last_generated_params
+            try:
+                self.save_shot(project_id, shot)
+                return True
+            except ShotConflictError:
+                if attempt == attempts - 1:
+                    raise
+            except KeyError:
+                return False  # Deleted between the load and the save
+        return False
+
     def delete_shot(self, project_id: str, scene_id: str, shot_id: str) -> None:
         """
         Deletes one shot.
@@ -567,6 +747,105 @@ class StoryboardStore:
             shot_id: str - Unique ID of the shot.
         """
         self._table.delete_item(Key={"PK": project_pk(project_id), "SK": shot_sk(scene_id, shot_id)})
+
+    def save_story(self, project_id: str, job_id: str, story: str) -> None:
+        self._table.put_item(Item={"PK": project_pk(project_id), "SK": story_sk(job_id), "text": story})
+
+    def get_story(self, project_id: str, job_id: str) -> str:
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": story_sk(job_id)}).get("Item")
+        if item is None:
+            raise KeyError(f"No story for job {job_id!r} in project {project_id!r}")
+        return item["text"]
+
+    def create_job(self, project_id: str, job: GenerationJob) -> None:
+        """
+        Saves a new generation job. Never overwrites one.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job: GenerationJob - The job.
+        """
+        item = {"PK": project_pk(project_id), "SK": job_sk(job.id), **_to_dynamo(job.model_dump(mode="json", exclude={"id"}))}
+        self._table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
+
+    def get_job(self, project_id: str, job_id: str) -> GenerationJob:
+        """
+        Gets one generation job, with its tasks.
+
+        Raises a KeyError if there is no such job.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique ID of the job.
+
+        Returns:
+            GenerationJob - The job.
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": job_sk(job_id)}).get("Item")
+        if item is None:
+            raise KeyError(f"No job {job_id!r} in project {project_id!r}")
+        return _job_from_item(item)
+
+    def list_jobs(self, project_id: str) -> list[GenerationJob]:
+        """
+        Lists a project's generation jobs, newest first.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            list[GenerationJob] - The jobs.
+        """
+        jobs = [_job_from_item(item) for item in self._query(project_id, "JOB#")]
+        return sorted(jobs, key=lambda job: job.created_at, reverse=True)
+
+    def set_job_status(self, project_id: str, job_id: str, status: JobStatus, error: str | None = None) -> None:
+        """
+        Records where a job is up to (and, if it failed, why).
+
+        Raises a KeyError if there is no such job.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique ID of the job.
+            status: JobStatus - Its new status.
+            error: str - Why it failed. Defaults to None.
+        """
+        self._update_job(project_id, job_id, "SET #status = :status, #error = :error", {":status": status.value, ":error": error})
+
+    def set_task_status(self, project_id: str, job_id: str, index: int, status: TaskStatus, error: str | None = None) -> None:
+        """
+        Records how drawing one of a job's layers went -- that task alone, so the job's other tasks are never rewritten.
+
+        Raises a KeyError if there is no such job.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            job_id: str - Unique ID of the job.
+            index: int - Position of the task in the job.
+            status: TaskStatus - How it went.
+            error: str - Why it failed. Defaults to None.
+        """
+        self._update_job(
+            project_id, job_id,
+            f"SET tasks[{int(index)}].#status = :status, tasks[{int(index)}].#error = :error",  # DynamoDB takes list indexes only as literals
+            {":status": status.value, ":error": error},
+        )
+
+    def _update_job(self, project_id: str, job_id: str, expression: str, values: dict) -> None:
+        """
+        Applies an update to an existing job's item.
+        """
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": job_sk(job_id)},
+                UpdateExpression=expression,
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#status": "status", "#error": "error"},
+                ExpressionAttributeValues=values,
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            raise KeyError(f"No job {job_id!r} in project {project_id!r}") from None
 
     def _shot_item(self, project_id: str, shot: Shot) -> dict:
         """
@@ -632,3 +911,15 @@ def _shot_from_item(item: dict) -> Shot:
     """
     _, scene_id, shot_id = item["SK"].split("#")
     return Shot.model_validate({**_item_fields(item), "scene_id": scene_id, "id": shot_id})
+
+def _job_from_item(item: dict) -> GenerationJob:
+    """
+    Builds a generation job from its DynamoDB item, taking its ID back out of the sort key.
+
+    Arguments:
+        item: dict - The item.
+
+    Returns:
+        GenerationJob - The job.
+    """
+    return GenerationJob.model_validate({**_item_fields(item), "id": item["SK"].removeprefix("JOB#")})

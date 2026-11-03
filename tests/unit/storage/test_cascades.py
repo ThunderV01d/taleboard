@@ -20,7 +20,7 @@ def boards(aws):
     A StoryboardStore backed by the shared fakes.
 
     Arguments:
-        aws: tuple[ProjectStore,JobQueue] - The shared fakes (they also set the TALEBOARD_* environment variables).
+        aws: None - The shared fakes (they set the TALEBOARD_* environment variables).
 
     Returns:
         StoryboardStore - A store backed by the fakes.

@@ -472,6 +472,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/generate/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Generation
+         * @description Says how many layers a Generate request would draw, and at most how many images that would take -- without drawing anything.
+         */
+        post: operations["preview_generation_projects__project_id__generate_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate
+         * @description Asks for the layers a request names to be drawn: saves them as a job's tasks, and queues it behind the project's earlier jobs. A request with nothing to draw is a 400, and no job is made.
+         */
+        post: operations["generate_projects__project_id__generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Jobs
+         * @description Lists the project's generation jobs, newest first -- so a reopened editor can pick up the ones still running.
+         */
+        get: operations["list_jobs_projects__project_id__jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Job
+         * @description Gets one generation job, with how each of its layers went.
+         */
+        get: operations["read_job_projects__project_id__jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Story
+         * @description Queues a story to be imported into an empty project. A project with anything in it already -- or an import already on its way -- is a 409, as an import fills the project from scratch.
+         */
+        post: operations["import_story_projects__project_id__import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -825,6 +925,93 @@ export interface components {
          */
         Facing: "north" | "east" | "south" | "west";
         /**
+         * GenerateIn
+         * @description Request body naming what to draw: leave everything out for the whole project, or narrow it to a scene, a shot in it, or one layer of that shot.
+         *
+         *     Attributes:
+         *         scene_id: str - Draw only this scene. Defaults to None (the whole project).
+         *         shot_id: str - Draw only this shot (of scene_id). Defaults to None.
+         *         layer_id: str - Draw only this layer (of shot_id) -- drawn even if it's up to date. Defaults to None.
+         */
+        GenerateIn: {
+            /** Scene Id */
+            scene_id?: string | null;
+            /** Shot Id */
+            shot_id?: string | null;
+            /** Layer Id */
+            layer_id?: string | null;
+        };
+        /**
+         * GeneratePlan
+         * @description What a Generate request would draw.
+         *
+         *     Attributes:
+         *         layers: int - Layers it would draw.
+         *         images: int - The most images that would take -- fewer, if some are already drawn.
+         */
+        GeneratePlan: {
+            /** Layers */
+            layers: number;
+            /** Images */
+            images: number;
+        };
+        /**
+         * GenerationJob
+         * @description One Generate request: the layers it is to draw, in order.
+         *
+         *     Attributes:
+         *         id: str - Unique ID of the job. Defaults to a new random ID.
+         *         created_at: datetime - When it was asked for (UTC).
+         *         status: JobStatus - Where it's up to. Defaults to QUEUED.
+         *         tasks: list[GenerationTask] - The layers to draw, in order. Defaults to [].
+         *         error: str - Why the job itself failed, if it did. Defaults to None.
+         */
+        GenerationJob: {
+            /** Id */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** @default generate */
+            kind: components["schemas"]["JobKind"];
+            /**
+             * Draw
+             * @default false
+             */
+            draw: boolean;
+            /** @default queued */
+            status: components["schemas"]["JobStatus"];
+            /** Tasks */
+            tasks: components["schemas"]["GenerationTask"][];
+            /** Error */
+            error: string | null;
+        };
+        /**
+         * GenerationTask
+         * @description One layer for a job to draw.
+         *
+         *     Attributes:
+         *         scene_id: str - The scene the layer's shot is in.
+         *         shot_id: str - The shot the layer is in.
+         *         layer_id: str - The layer to draw.
+         *         status: TaskStatus - How drawing it went. Defaults to PENDING.
+         *         error: str - Why it failed, if it did. Defaults to None.
+         */
+        GenerationTask: {
+            /** Scene Id */
+            scene_id: string;
+            /** Shot Id */
+            shot_id: string;
+            /** Layer Id */
+            layer_id: string;
+            /** @default pending */
+            status: components["schemas"]["TaskStatus"];
+            /** Error */
+            error: string | null;
+        };
+        /**
          * GroupLayer
          * @description A container that moves and fades several layers together (eg:- a prop held in a character's hand). Never generated itself.
          *
@@ -974,6 +1161,57 @@ export interface components {
             type: "image";
         };
         /**
+         * ImportIn
+         * @description Request body for a story import.
+         *
+         *     Attributes:
+         *         story: str - The story (in plain text, paragraphs separated by blank lines).
+         *         draw: bool - Whether to draw every layer once it's imported. Defaults to True.
+         */
+        ImportIn: {
+            /** Story */
+            story: string;
+            /**
+             * Draw
+             * @default true
+             */
+            draw: boolean;
+        };
+        /**
+         * JobKind
+         * @enum {string}
+         */
+        JobKind: "generate" | "import";
+        /**
+         * JobStatus
+         * @description Where a generation job is up to.
+         * @enum {string}
+         */
+        JobStatus: "queued" | "running" | "complete" | "failed";
+        /**
+         * LocationIn
+         * @description Request body for creating a location.
+         *
+         *     Attributes:
+         *         setting: Setting - Whether the place is indoors or out. Defaults to INT.
+         *         views: dict[Facing,str] - What's on each side of the place. Defaults to {}.
+         */
+        LocationIn: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** @default interior */
+            setting: components["schemas"]["Setting"];
+            /** Views */
+            views?: {
+                [key: string]: string;
+            };
+        };
+        /**
          * LocationOut
          * @description A location, with a download URL for each of its plates.
          *
@@ -990,6 +1228,12 @@ export interface components {
              * @default
              */
             description: string;
+            /** @default interior */
+            setting: components["schemas"]["Setting"];
+            /** Views */
+            views: {
+                [key: string]: string;
+            };
             /** Plates */
             plates: {
                 [key: string]: string;
@@ -998,6 +1242,25 @@ export interface components {
             image_urls: {
                 [key: string]: string;
             };
+        };
+        /**
+         * LocationPatch
+         * @description Request body for editing a location.
+         *
+         *     Attributes:
+         *         setting: Setting - New setting. Defaults to None (unchanged).
+         *         views: dict[Facing,str] - New views (replacing the old ones). Defaults to None (unchanged).
+         */
+        LocationPatch: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            setting?: components["schemas"]["Setting"] | null;
+            /** Views */
+            views?: {
+                [key: string]: string;
+            } | null;
         };
         /**
          * Orientation
@@ -1309,6 +1572,12 @@ export interface components {
             shots: components["schemas"]["ShotUse"][];
         };
         /**
+         * Setting
+         * @description Whether a location is indoors or out. Decides how its plates are worded ("inside" a room, or "at" a place), and how a scene's time of day and weather are drawn there: outdoors as sky and weather; indoors as light alone, so rain and snow are never drawn inside a room.
+         * @enum {string}
+         */
+        Setting: "interior" | "exterior";
+        /**
          * ShotIn
          * @description Request body for creating a shot.
          *
@@ -1452,6 +1721,12 @@ export interface components {
             /** Order */
             order: number;
         };
+        /**
+         * TaskStatus
+         * @description How drawing one layer went.
+         * @enum {string}
+         */
+        TaskStatus: "pending" | "done" | "failed" | "skipped";
         /**
          * TextLayer
          * @description A caption or line of dialogue drawn on the shot. Never generated.
@@ -2337,7 +2612,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["EntryIn"];
+                "application/json": components["schemas"]["LocationIn"];
             };
         };
         responses: {
@@ -2442,7 +2717,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["EntryPatch"];
+                "application/json": components["schemas"]["LocationPatch"];
             };
         };
         responses: {
@@ -2924,6 +3199,174 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_generation_projects__project_id__generate_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneratePlan"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_projects__project_id__generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_jobs_projects__project_id__jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationJob"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_job_projects__project_id__jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_story_projects__project_id__import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationJob"];
                 };
             };
             /** @description Validation Error */
