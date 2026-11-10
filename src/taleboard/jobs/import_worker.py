@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from taleboard.generation.planning import layers_to_draw
+from taleboard.generation.planning import Registry, layers_to_draw
 from taleboard.jobs.generation_worker import FAILED_RETRY_DELAY_S, MAX_ATTEMPTS
 from taleboard.jobs.queue import GenerationQueue, parse_message
 from taleboard.parsing.bedrock_caller import MakeCaller, make_bedrock_caller
@@ -71,7 +71,7 @@ def run_import_job(
 
     drawing = None
     if job.draw:
-        planned = layers_to_draw(written)
+        planned = layers_to_draw(written, Registry.load(boards, project_id))
         if planned:
             drawing = GenerationJob(
                 created_at=datetime.now(timezone.utc),

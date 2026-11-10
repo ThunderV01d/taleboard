@@ -3,7 +3,7 @@ Works out what a Generate request will draw -- which layers, in what order -- an
 
 Kept apart from the engine so the API can use it: the engine needs the image-generation and background-removal libraries, which only the worker has.
 
-Asking for a whole shot, scene or project draws only the layers that need it (never drawn, or changed since); asking for one layer always draws it.
+Asking for a whole shot, scene or project draws only the layers that need it (never drawn, or changed since -- in the layer, its shot, its scene or its registry entry); asking for one layer always draws it.
 """
 from dataclasses import dataclass
 
@@ -11,6 +11,9 @@ from taleboard.generation.prompts import lighting_prompt
 from taleboard.schema.enums import CameraAngle, Facing, Orientation, ShotSize
 from taleboard.schema.layers import BackgroundLayer, CharacterLayer, GeneratedLayer, PropLayer
 from taleboard.schema.storyboard import Character, Location, Prop, Scene, Shot
+
+# The params a layer records from its registry entry, rather than from itself, its shot or its scene
+_UPSTREAM = {"location_description", "setting", "view", "north_view", "description", "sketches"}
 
 
 @dataclass(frozen=True)
@@ -28,27 +31,96 @@ class Planned:
     layer: GeneratedLayer
 
 
-def needs_drawing(layer: GeneratedLayer, shot: Shot, scene: Scene) -> bool:
+@dataclass(frozen=True)
+class Registry:
     """
-    True if a layer has never been drawn, or what it depends on has changed since it was.
+    A project's registries -- what every generated layer is drawn from, besides itself, its shot and its scene.
+
+    Attributes:
+        locations: dict[str,Location] - The project's locations, by ID.
+        characters: dict[str,Character] - The project's characters, by ID.
+        props: dict[str,Prop] - The project's props, by ID.
+    """
+    locations: dict[str, Location]
+    characters: dict[str, Character]
+    props: dict[str, Prop]
+
+    @classmethod
+    def load(cls, boards, project_id: str) -> "Registry":
+        """
+        Reads a project's registries.
+
+        Arguments:
+            boards: StoryboardStore - Store to read from.
+            project_id: str - Unique project ID.
+
+        Returns:
+            Registry - The project's registries.
+        """
+        return cls(
+            {entry.id: entry for entry in boards.list_entries(project_id, Location)},
+            {entry.id: entry for entry in boards.list_entries(project_id, Character)},
+            {entry.id: entry for entry in boards.list_entries(project_id, Prop)},
+        )
+
+    def entry_for(self, layer: GeneratedLayer, scene: Scene) -> Character | Prop | Location | None:
+        """
+        The registry entry a generated layer is drawn from: its scene's location for a background, else its character or prop. None if it's gone.
+        """
+        if isinstance(layer, BackgroundLayer):
+            return self.locations.get(scene.location_id)
+        if isinstance(layer, CharacterLayer):
+            return self.characters.get(layer.character_id)
+        if isinstance(layer, PropLayer):
+            return self.props.get(layer.prop_id)
+        return None
+
+
+def needs_drawing(layer: GeneratedLayer, shot: Shot, scene: Scene, registry: Registry) -> bool:
+    """
+    True if a layer has never been drawn, or what it depends on has changed since it was -- in the layer, its shot, its scene or its registry entry.
 
     Arguments:
         layer: GeneratedLayer - The layer.
         shot: Shot - The shot it is in.
         scene: Scene - The shot's scene.
+        registry: Registry - The project's registries.
 
     Returns:
         bool - Whether it needs drawing.
     """
-    return layer.image is None or layer.needs_regeneration(shot.generation_context(scene))
+    return layer.changes(shot.generation_context(scene), registry.entry_for(layer,scene)) is not None
 
 
-def layers_to_draw(shots: list[tuple[Scene, Shot]]) -> list[Planned]:
+def out_of_date(shot: Shot, scene: Scene, registry: Registry) -> dict[str, list[str]]:
+    """
+    The shot's layers that need drawing (exactly those generation would draw), each with what's changed since it was drawn.
+
+    Arguments:
+        shot: Shot - The shot.
+        scene: Scene - The shot's scene.
+        registry: Registry - The project's registries.
+
+    Returns:
+        dict[str,list[str]] - What's changed (the params' names -- empty for a layer never drawn), by layer ID. Layers that are up to date are not listed.
+    """
+    context = shot.generation_context(scene)
+    changed = {}
+    for layer in shot.all_layers():
+        if isinstance(layer, GeneratedLayer):
+            changes = layer.changes(context, registry.entry_for(layer, scene))
+            if changes is not None:
+                changed[layer.id] = changes
+    return changed
+
+
+def layers_to_draw(shots: list[tuple[Scene, Shot]], registry: Registry) -> list[Planned]:
     """
     Every layer in these shots that needs drawing, in story order: shot by shot, and bottom to top within each (so a shot's background comes first).
 
     Arguments:
         shots: list[tuple[Scene,Shot]] - The shots, in order, each with its scene.
+        registry: Registry - The project's registries.
 
     Returns:
         list[Planned] - The layers to draw.
@@ -57,26 +129,19 @@ def layers_to_draw(shots: list[tuple[Scene, Shot]]) -> list[Planned]:
         Planned(scene, shot, layer)
         for scene, shot in shots
         for layer in shot.all_layers()
-        if isinstance(layer, GeneratedLayer) and needs_drawing(layer, shot, scene)
+        if isinstance(layer, GeneratedLayer) and needs_drawing(layer, shot, scene, registry)
     ]
 
 
-def images_at_most(
-    planned: list[Planned],
-    locations: dict[str, Location],
-    characters: dict[str, Character],
-    props: dict[str, Prop],
-) -> int:
+def images_at_most(planned: list[Planned], registry: Registry) -> int:
     """
     The most images drawing these layers can take: each link of each background chain, and each reference and pose, counted once however many layers share it.
 
-    An upper bound, as it never checks for images already drawn (a pose, or a chain link, another shot already paid for) -- only for plates and references recorded on their registry entries.
+    An upper bound, as it never checks for images already drawn (a pose, or a chain link, another shot already paid for). A plate or reference recorded on its registry entry is counted as free -- unless a layer drawn from it has seen its entry change since, as a generated one is then drawn again (a sketched one never is).
 
     Arguments:
         planned: list[Planned] - The layers to draw.
-        locations: dict[str,Location] - The project's locations, by ID.
-        characters: dict[str,Character] - The project's characters, by ID.
-        props: dict[str,Prop] - The project's props, by ID.
+        registry: Registry - The project's registries.
 
     Returns:
         int - The most images it will take.
@@ -84,24 +149,33 @@ def images_at_most(
     images: set[tuple] = set()
     for item in planned:
         layer, shot, scene = item.layer, item.shot, item.scene
+        entry = registry.entry_for(layer, scene)
+        if entry is None:
+            continue  # Gone from the registry: the worker fails it without drawing anything
+        redraw = _entry_changed(layer, shot, scene, entry)
         if isinstance(layer, BackgroundLayer):
-            location = locations.get(scene.location_id)
-            if location is not None:
-                images |= _background_images(location, layer.facing, shot, scene)
+            images |= _background_images(entry, layer.facing, shot, scene, redraw)
         elif isinstance(layer, CharacterLayer):
-            character = characters.get(layer.character_id)
-            if character is not None:
-                images |= _reference_images("character", character, layer.orientation)
-                if layer.action.strip():
-                    images.add(("pose", character.id, layer.orientation, layer.action.strip()))
+            images |= _reference_images("character", entry, layer.orientation, redraw)
+            if layer.action.strip():
+                images.add(("pose", entry.id, layer.orientation, layer.action.strip()))
         elif isinstance(layer, PropLayer):
-            prop = props.get(layer.prop_id)
-            if prop is not None:
-                images |= _reference_images("prop", prop, layer.orientation)
+            images |= _reference_images("prop", entry, layer.orientation, redraw)
     return len(images)
 
 
-def _background_images(location: Location, facing: Facing, shot: Shot, scene: Scene) -> set[tuple]:
+def _entry_changed(layer: GeneratedLayer, shot: Shot, scene: Scene, entry: Character | Prop | Location) -> bool:
+    """
+    Whether what a drawn layer recorded of its registry entry differs from the entry now (False for a layer never drawn).
+    """
+    last = layer.last_generated_params
+    if last is None:
+        return False
+    now = layer.current_params(shot.generation_context(scene), entry)
+    return last.model_dump(include=_UPSTREAM) != now.model_dump(include=_UPSTREAM)
+
+
+def _background_images(location: Location, facing: Facing, shot: Shot, scene: Scene, redraw: bool) -> set[tuple]:
     """
     The images one background's chain can take, each named by everything that makes it a different image (as the engine's keys are).
     """
@@ -109,7 +183,8 @@ def _background_images(location: Location, facing: Facing, shot: Shot, scene: Sc
     if facing != Facing.NORTH and facing not in location.views:
         facing = Facing.NORTH  # Nothing says what's on that side, so it shows the north plate
     for plate in {Facing.NORTH, facing}:
-        if plate not in location.plates:
+        recorded = location.plates.get(plate)
+        if recorded is None or (redraw and recorded.source == "generated"):
             images.add(("plate", location.id, plate))
     chain: tuple = (location.id, facing)
     framing = ShotSize.WIDE if shot.shot_size == ShotSize.CLOSE_UP else shot.shot_size
@@ -124,12 +199,12 @@ def _background_images(location: Location, facing: Facing, shot: Shot, scene: Sc
     return images
 
 
-def _reference_images(kind: str, entry: Character | Prop, orientation: Orientation) -> set[tuple]:
+def _reference_images(kind: str, entry: Character | Prop, orientation: Orientation, redraw: bool) -> set[tuple]:
     """
     The references a character or prop facing this way can take: the front one, and the one for this orientation (drawn from the front).
     """
     return {
         (kind, entry.id, wanted)
         for wanted in {Orientation.TOWARDS_CAMERA, orientation}
-        if wanted not in entry.references
+        if wanted not in entry.references or (redraw and entry.references[wanted].source == "generated")
     }

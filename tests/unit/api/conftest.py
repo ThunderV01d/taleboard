@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taleboard.api.app import app
-from taleboard.api.deps import get_boards, get_user_id
+from taleboard.api.deps import get_boards, get_claims
 from taleboard.storage.storyboard_store import StoryboardStore
 
 TEST_USER_ID = "test-user"
@@ -42,7 +42,7 @@ def user_id() -> str:
 @pytest.fixture
 def client(boards):
     """
-    A test client whose store is the fakes, signed in as TEST_USER_ID -- standing in for API Gateway's JWT authorizer, which doesn't run in tests.
+    A test client whose store is the fakes, signed in as TEST_USER_ID -- its token's claims stand in for API Gateway's JWT authorizer, which doesn't run in tests.
 
     Arguments:
         boards: StoryboardStore - Fake-backed store.
@@ -51,6 +51,6 @@ def client(boards):
         TestClient - Client for the API.
     """
     app.dependency_overrides[get_boards] = lambda: boards
-    app.dependency_overrides[get_user_id] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_claims] = lambda: {"sub": TEST_USER_ID}
     yield TestClient(app)
     app.dependency_overrides.clear()

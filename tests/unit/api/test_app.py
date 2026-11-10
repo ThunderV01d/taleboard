@@ -13,7 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from taleboard.api.app import app
-from taleboard.api.deps import get_boards, get_user_id
+from taleboard.api.deps import get_boards, get_claims, get_user_id
 
 def _create(client, name: str = "Lighthouse") -> str:
     """
@@ -33,14 +33,14 @@ def _create(client, name: str = "Lighthouse") -> str:
 
 def test_a_project_is_created_read_and_listed(client, user_id):
     """
-    Verifies that a created project comes back with its ID, name, owner (the signed-in user) and creation time, and can be read and listed.
+    Verifies that a created project comes back with its ID, name, owner (the signed-in user), creation time and the user's access to it (their own), and can be read and listed.
     """
     created = client.post("/projects", json={"name": "Lighthouse"})
 
     assert created.status_code == 201
     project = created.json()
-    assert set(project) == {"project_id", "name", "owner_id", "created_at"}
-    assert project["owner_id"] == user_id
+    assert set(project) == {"project_id", "name", "owner_id", "created_at", "access"}
+    assert (project["owner_id"], project["access"]) == (user_id, "owner")
     assert client.get(f"/projects/{project['project_id']}").json() == project
     assert project in client.get("/projects").json()
 
@@ -121,7 +121,7 @@ def _as(user_id: str) -> None:
     Arguments:
         user_id: str - The user to act as.
     """
-    app.dependency_overrides[get_user_id] = lambda: user_id
+    app.dependency_overrides[get_claims] = lambda: {"sub": user_id}
 
 
 def test_each_user_only_lists_their_own_projects(client, user_id):
@@ -157,7 +157,7 @@ def test_no_route_lets_one_user_into_another_users_project(client, boards, metho
     client.post(f"/projects/{pid}/locations", json={"name": "Office"})
     scene = client.post(f"/projects/{pid}/scenes", json={"location_id": "office"}).json()["id"]
     shot = client.post(f"/projects/{pid}/scenes/{scene}/shots", json={}).json()["id"]
-    url = path.format(project_id=pid, scene_id=scene, shot_id=shot, entry_id="office", job_id="any-job")
+    url = path.format(project_id=pid, scene_id=scene, shot_id=shot, entry_id="office", job_id="any-job", slot="north", grantee_id="someone")  # A facing -- not an orientation, but the ownership check answers before the slot is ever looked at
     _as("intruder")
 
     response = client.request(method, url)
@@ -202,7 +202,7 @@ def test_the_user_id_is_the_sub_claim_the_authorizer_verified():
     """
     event = {"version": "2.0", "requestContext": {"authorizer": {"jwt": {"claims": {"sub": "user-123", "client_id": "web"}, "scopes": None}}}}
 
-    assert get_user_id(_request(event)) == "user-123"
+    assert get_user_id(get_claims(_request(event))) == "user-123"
 
 
 @pytest.mark.parametrize("event", [
@@ -212,13 +212,13 @@ def test_the_user_id_is_the_sub_claim_the_authorizer_verified():
 ])
 def test_a_request_without_verified_claims_has_no_user(event):
     """
-    Verifies that get_user_id refuses with a 401 whenever the verified sub is missing, instead of letting the request through.
+    Verifies that get_claims (which get_user_id, and the guest check, read from) refuses with a 401 whenever the verified sub is missing, instead of letting the request through.
 
     Arguments:
         event: dict - An API Gateway event without a verified sub.
     """
     with pytest.raises(HTTPException) as refused:
-        get_user_id(_request(event))
+        get_claims(_request(event))
 
     assert refused.value.status_code == 401
 
@@ -228,7 +228,7 @@ def test_a_request_that_bypassed_lambda_has_no_user():
     Verifies that a request with no Lambda event at all (eg:- the app run directly) is refused, not treated as anyone.
     """
     with pytest.raises(HTTPException):
-        get_user_id(Request({"type": "http", "method": "GET", "path": "/", "headers": []}))
+        get_claims(Request({"type": "http", "method": "GET", "path": "/", "headers": []}))
 
 
 def test_the_api_never_loads_the_image_models_or_the_story_breakdown():
@@ -243,7 +243,7 @@ def test_the_api_never_loads_the_image_models_or_the_story_breakdown():
 
 
 @pytest.mark.parametrize("schema, fields", [
-    ("Project", {"project_id", "name", "owner_id", "created_at"}),
+    ("ProjectOut", {"project_id", "name", "owner_id", "created_at", "access"}),
     ("Scene", {"id", "name", "order", "location_id"}),
     ("ShotOut", {"id", "layers", "version", "image_urls"}),
     ("GroupLayer-Output", {"id", "transform", "children", "opacity", "visible"}),

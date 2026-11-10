@@ -275,7 +275,7 @@ def test_a_shot_round_trips_with_its_whole_layer_graph(boards, pid):
     scene = Scene(location_id="office")
     shot = _shot(scene.id, shot_size=ShotSize.CLOSE_UP, details="door open")
     character = shot.layers[1].children[0]
-    character.last_generated_params = character.current_params(shot.generation_context(scene))
+    character.last_generated_params = character.current_params(shot.generation_context(scene), None)
     boards.create_shot(pid, shot)
 
     loaded = boards.get_shot(pid, scene.id, shot.id)
@@ -418,10 +418,10 @@ def test_saving_one_entry_image_keeps_everything_else_about_the_entry(boards, pi
     """
     lighthouse = boards.create_entry(pid, Location, "Lighthouse", description="a lamp room")
     mara = boards.create_entry(pid, Character, "Mara", description="a keeper")
-    boards.save_entry(pid, lighthouse.model_copy(update={"description": "edited meanwhile", "plates": {Facing.SOUTH: "south.png"}}))
+    boards.save_entry(pid, lighthouse.model_copy(update={"description": "edited meanwhile", "plates": {Facing.SOUTH: Reference(image="south.png", source="sketch")}}))
     boards.save_entry(pid, mara.model_copy(update={"description": "edited meanwhile"}))
 
-    lighthouse.plates[Facing.NORTH] = "north.png"
+    lighthouse.plates[Facing.NORTH] = Reference(image="north.png", source="generated")
     boards.save_entry_image(pid, lighthouse, "north")
     mara.references[Orientation.LEFT] = Reference(image="left.png", source="generated")
     boards.save_entry_image(pid, mara, "left")
@@ -429,7 +429,7 @@ def test_saving_one_entry_image_keeps_everything_else_about_the_entry(boards, pi
     stored_place = boards.get_entry(pid, Location, lighthouse.id)
     stored_mara = boards.get_entry(pid, Character, mara.id)
     assert stored_place.description == stored_mara.description == "edited meanwhile"
-    assert stored_place.plates == {Facing.SOUTH: "south.png", Facing.NORTH: "north.png"}
+    assert stored_place.plates == {Facing.SOUTH: Reference(image="south.png", source="sketch"), Facing.NORTH: Reference(image="north.png", source="generated")}
     assert stored_mara.references == {Orientation.LEFT: Reference(image="left.png", source="generated")}
 
 

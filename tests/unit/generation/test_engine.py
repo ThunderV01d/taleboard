@@ -133,7 +133,7 @@ def test_a_wide_eye_level_shot_by_day_is_the_north_plate_itself(setup):
     key = _background(generator, location)
 
     assert fakes["background"].calls == [(prompts.plate_prompt(location, Facing.NORTH), 0)]
-    assert location.plates == {Facing.NORTH: key}
+    assert location.plates == {Facing.NORTH: Reference(image=key, source="generated")}
     assert store.saved == [(PID, "lighthouse", "north")]
     assert _is_monochrome(store.images[key])
 
@@ -264,7 +264,7 @@ def test_a_sketched_plate_on_the_entry_is_used_as_it_is(setup):
     generator, store, fakes = setup
     location = _location()
     store.images["sketch.png"] = _png((255, 255, 255))
-    location.plates[Facing.NORTH] = "sketch.png"
+    location.plates[Facing.NORTH] = Reference(image="sketch.png", source="sketch")
 
     assert _background(generator, location) == "sketch.png"
     _background(generator, location, size=ShotSize.MEDIUM)
@@ -408,7 +408,8 @@ def test_generating_a_layer_shows_its_image_and_records_what_it_was_drawn_from(s
     done = generator.generate_layer(layer, shot, scene, _location(), {"mara": _character()}, {"lamp": _prop()})
 
     assert done.image in store.images and _is_monochrome(store.images[done.image])
-    assert done.needs_regeneration(shot.generation_context(scene)) is False
+    entry = {"background": _location(), "character": _character(), "prop": _prop()}[done.type]
+    assert done.needs_regeneration(shot.generation_context(scene), entry) is False
     assert (done.id, done.transform) == (layer.id, layer.transform)
     assert layer.image is None
 
@@ -453,3 +454,70 @@ def test_props_are_cut_out_by_the_prop_remover_and_characters_by_the_model():
     generator.character(_character(), Orientation.TOWARDS_CAMERA, "")
 
     assert removed == ["prop", "model"]
+
+
+def test_a_recorded_reference_is_drawn_again_once_its_description_changes(setup):
+    """
+    Verifies that a generated reference on the entry is only a record: the same description finds it again for free, an edited one draws (and records) a new one.
+    """
+    generator, store, fakes = setup
+    mara = _character()
+    first = generator.character_reference(mara, Orientation.TOWARDS_CAMERA)
+
+    assert generator.character_reference(mara, Orientation.TOWARDS_CAMERA) == first
+    assert len(fakes["character"].calls) == 1
+    edited = mara.model_copy(update={"description": "a lighthouse keeper in a red scarf"})
+    second = generator.character_reference(edited, Orientation.TOWARDS_CAMERA)
+
+    assert second != first and len(fakes["character"].calls) == 2
+    assert edited.references[Orientation.TOWARDS_CAMERA].image == second
+    assert store.saved[-1] == (PID, "mara", "towards_camera")
+
+
+def test_a_recorded_plate_is_drawn_again_once_its_view_changes(setup):
+    """
+    Verifies the same for plates: an edited view draws a new plate, and the entry records it.
+    """
+    generator, store, fakes = setup
+    office = _with_views()
+    first = generator.plate(office, Facing.NORTH)
+    edited = office.model_copy(update={"views": {**office.views, Facing.NORTH: "a bare brick wall"}})
+
+    second = generator.plate(edited, Facing.NORTH)
+
+    assert second != first and edited.plates[Facing.NORTH].image == second
+    assert len(fakes["background"].calls) == 2
+
+
+def test_a_sketched_reference_is_cut_out_once_and_drawn_from(setup):
+    """
+    Verifies that a character's sketch is cut out of its paper (once -- then found by its key), and that a pose is drawn from the cutout, not the paper.
+    """
+    generator, store, fakes = setup
+    removed: list[bytes] = []
+    generator._remove_background = lambda image: removed.append(image) or _cut_out(image)
+    mara = _character()
+    store.images["sketch.png"] = _png((250, 250, 250))
+    mara.references[Orientation.TOWARDS_CAMERA] = Reference(image="sketch.png", source="sketch")
+
+    first = generator.character_reference(mara, Orientation.TOWARDS_CAMERA)
+    assert generator.character_reference(mara, Orientation.TOWARDS_CAMERA) == first
+    generator.character(mara, Orientation.TOWARDS_CAMERA, "waving")
+
+    assert first != "sketch.png" and removed.count(store.images["sketch.png"]) == 1  # The pose's own cutout is removed too -- count only the sketch's
+    assert fakes["character"].calls == [(prompts.character_prompt(mara, Orientation.TOWARDS_CAMERA, "waving"), 1)]  # Only the pose
+    assert mara.references[Orientation.TOWARDS_CAMERA].image == "sketch.png"  # The entry keeps the sketch itself
+
+
+def test_a_sketch_kept_with_its_background_is_used_untouched(setup):
+    """
+    Verifies that a sketch the user said to keep as it is goes straight to the layer, never through background removal.
+    """
+    generator, store, fakes = setup
+    generator._remove_prop_background = lambda image: pytest.fail("a kept sketch was cut out")
+    lamp = _prop()
+    store.images["lamp-sketch.png"] = _png((250, 250, 250))
+    lamp.references[Orientation.TOWARDS_CAMERA] = Reference(image="lamp-sketch.png", source="sketch", remove_background=False)
+
+    assert generator.prop_reference(lamp, Orientation.TOWARDS_CAMERA) == "lamp-sketch.png"
+    assert fakes["prop"].calls == []

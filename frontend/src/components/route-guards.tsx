@@ -13,7 +13,8 @@ function CheckingSession() {
 }
 
 /**
- * Pages only for signed-in users. Anyone else goes to the sign-in page, which sends them back here afterwards.
+ * Pages only for signed-in users -- and guests, who see the projects shared with them, read-only. Anyone else goes to
+ * the sign-in page, which sends them back here afterwards.
  */
 export function RequireSignedIn() {
   const auth = useAuth()
@@ -28,8 +29,8 @@ export function RequireSignedIn() {
 }
 
 /**
- * Pages only for signed-out users (sign in, sign up). Signing in on one of them moves straight on -- to where the
- * user was going, or their projects.
+ * Pages only for signed-out users (sign in, sign up) -- and guests, who can sign in or up from here. Signing in on one
+ * of them moves straight on -- to where the user was going, or their projects.
  */
 export function RequireSignedOut() {
   const auth = useAuth()

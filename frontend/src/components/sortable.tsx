@@ -78,15 +78,18 @@ export function SortableList({
 }
 
 /**
- * One item in a SortableList. `children` gets the grip to place wherever suits the item.
+ * One item in a SortableList. `children` gets the grip to place wherever suits the item -- none, when it can't be moved
+ * (`disabled`, in a project that's read-only).
  */
 export function SortableItem({
   id,
   className,
+  disabled = false,
   children,
 }: {
   id: string
   className?: string
+  disabled?: boolean
   children: (grip: ReactNode) => ReactNode
 }) {
   const {
@@ -97,9 +100,9 @@ export function SortableItem({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id })
+  } = useSortable({ id, disabled })
 
-  const grip = (
+  const grip = disabled ? null : (
     <button
       ref={setActivatorNodeRef}
       type="button"

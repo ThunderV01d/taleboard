@@ -11,9 +11,12 @@ Attributes:
 import uuid
 from typing import Annotated, Literal
 from pydantic import BaseModel, Field, model_validator
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from taleboard.schema.base import Model
-from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
+from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, Setting, ShotSize, TimeOfDay
+if TYPE_CHECKING: # Only for annotations: storyboard imports this module
+    from taleboard.schema.storyboard import Character, Location, Prop
 
 FRAME_SIZE = 1024
 
@@ -158,9 +161,22 @@ class GenerationContext(Model):
     time_of_day: TimeOfDay
     atmosphere: Atmosphere
 
+class SketchUsed(Model):
+    """
+    A sketched reference or plate that an image was drawn from.
+
+    Attributes:
+        image: str - S3 key of the sketch.
+        remove_background: bool - Whether its background was cut away first. Defaults to True.
+    """
+    image: str
+    remove_background: bool = True
+
 class BackgroundParams(Model):
     """
-    Everything a background's image was generated from.
+    Everything a background's image was generated from: its own facing, the shot's and scene's values, and what its location said about the sides it was drawn from (this facing's, and north's, which every other side is drawn from).
+
+    The location's fields default to empty, so params recorded before they were (which then never match) still load -- and mark the layer to be drawn again, which finds its unchanged images by their keys for free.
     """
     location_id: str
     facing: Facing
@@ -169,19 +185,39 @@ class BackgroundParams(Model):
     details: str
     time_of_day: TimeOfDay
     atmosphere: Atmosphere
+    location_description: str = ""
+    setting: Setting | None = None
+    view: str = ""
+    north_view: str = ""
+    sketches: dict[Facing, SketchUsed] = Field(default_factory=dict)
 
 class CharacterParams(Model):
     """
-    Everything a character layer's image was generated from (besides the character's own registry entry).
+    Everything a character layer's image was generated from: its own orientation and action, and what the character's registry entry said -- their description, and any sketch they're drawn from (the front one, which every other orientation is drawn from, and this orientation's).
     """
     orientation: Orientation
     action: str
+    description: str = ""
+    sketches: dict[Orientation, SketchUsed] = Field(default_factory=dict)
 
 class PropParams(Model):
     """
-    Everything a prop layer's image was generated from (besides the prop's own registry entry).
+    Everything a prop layer's image was generated from: its own orientation, and what the prop's registry entry said (its description, and the front and this orientation's sketches).
     """
     orientation: Orientation
+    description: str = ""
+    sketches: dict[Orientation, SketchUsed] = Field(default_factory=dict)
+
+
+def _sketches(slots: dict, wanted: set) -> dict:
+    """
+    The sketched references (or plates) among an entry's slots, for the slots an image is drawn from.
+    """
+    return {
+        slot: SketchUsed(image=reference.image, remove_background=reference.remove_background)
+        for slot, reference in slots.items()
+        if slot in wanted and reference.source == "sketch"
+    }
 
 class GeneratedLayer(PictureLayer):
     """
@@ -189,19 +225,20 @@ class GeneratedLayer(PictureLayer):
 
     Each subclass says which values its image depends on (current_params); comparing those with the values its image was actually made from (last_generated_params) is what enables or disables its Regenerate button. Transforms and corners are never part of either, so moving, resizing or warping a layer never makes it need regenerating.
     """
-    def current_params(self, context: GenerationContext) -> BaseModel:
+    def current_params(self, context: GenerationContext, entry: "Character | Prop | Location | None") -> BaseModel:
         """
         The values this layer's image would be generated from now.
 
         Arguments:
             context: GenerationContext - The shot- and scene-level values, for layers whose image depends on them.
+            entry: Character | Prop | Location | None - The scene's location for a background, otherwise the layer's character or prop, or None if its gone from the registry.
 
         Returns:
             BaseModel - This layer type's params model.
         """
         raise NotImplementedError
 
-    def needs_regeneration(self, context: GenerationContext) -> bool:
+    def needs_regeneration(self, context: GenerationContext, entry: "Character | Prop | Location | None") -> bool:
         """
         Whether Regenerate should be enabled: the layer has never been generated, or something its image depends on has changed since.
 
@@ -209,12 +246,32 @@ class GeneratedLayer(PictureLayer):
 
         Arguments:
             context: GenerationContext - The shot- and scene-level values.
+            entry: Character | Prop | Location | None - The scene's location for a background, otherwise the layer's character or prop, or None if its gone from the registry.
 
         Returns:
             bool - True if the layer's image is out of date.
         """
         last = getattr(self, "last_generated_params", None)
-        return last is None or last != self.current_params(context)
+        return last is None or last != self.current_params(context, entry)
+
+    def changes(self, context: GenerationContext, entry: "Character | Prop | Location | None") -> list[str] | None:
+        """
+        What has changed since  the layer's image was drawn -- what this editor shows as "Out of date: ... changed".
+
+        Arguments:
+            context: GenerationContext - The shot- and scene-level values.
+            entry: Character | Prop | Location | None - The scene's location for a background, otherwise the layer's character or prop, or None if its gone from the registry.
+
+        Returns:
+            list[str] | None - None if its image is up to date; [] if it has never been drawn; otherwise the names of the params that differ, in the params' own order (eg:- ["orientation", "description"]).
+        """
+        last = getattr(self, "last_generated_params", None)
+        if getattr(self, "image",None) is None or last is None:
+            return []
+        current = self.current_params(context, entry)
+        if last == current:
+            return None
+        return [name for name in type(current).model_fields if getattr(last, name) != getattr(current, name)]
 
 class BackgroundLayer(GeneratedLayer):
     """
@@ -229,8 +286,17 @@ class BackgroundLayer(GeneratedLayer):
     facing: Facing = Facing.NORTH
     last_generated_params: BackgroundParams | None = None
 
-    def current_params(self, context: GenerationContext) -> BackgroundParams:
-        return BackgroundParams(facing=self.facing, **context.model_dump())
+    def current_params(self, context: GenerationContext, entry: "Location | None") -> BackgroundParams:
+        if entry is None:
+            return BackgroundParams(facing=self.facing, **context.model_dump())
+        return BackgroundParams(
+            facing=self.facing, **context.model_dump(),
+            location_description=entry.description,
+            setting=entry.setting,
+            view=entry.views.get(self.facing, ""),
+            north_view=entry.views.get(Facing.NORTH, ""),
+            sketches=_sketches(entry.plates, {Facing.NORTH, self.facing}),
+        )
 
 class CharacterLayer(GeneratedLayer):
     """
@@ -249,8 +315,15 @@ class CharacterLayer(GeneratedLayer):
     action: str = Field(default="", max_length=200)
     last_generated_params: CharacterParams | None = None
 
-    def current_params(self, context: GenerationContext) -> CharacterParams:
-        return CharacterParams(orientation=self.orientation, action=self.action)
+    def current_params(self, context: GenerationContext, entry: "Character | None") -> CharacterParams:
+        if entry is None:
+            return CharacterParams(orientation=self.orientation, action=self.action)
+        return CharacterParams(
+            orientation=self.orientation,
+            action=self.action,
+            description=entry.description,
+            sketches=_sketches(entry.references, {Orientation.TOWARDS_CAMERA, self.orientation}),
+        )
 
 class PropLayer(GeneratedLayer):
     """
@@ -267,8 +340,49 @@ class PropLayer(GeneratedLayer):
     orientation: Orientation = Orientation.TOWARDS_CAMERA
     last_generated_params: PropParams | None = None
 
-    def current_params(self, context: GenerationContext) -> PropParams:
-        return PropParams(orientation=self.orientation)
+    def current_params(self, context: GenerationContext, entry: "Prop | None") -> PropParams:
+        if entry is None:
+            return PropParams(orientation=self.orientation)
+        return PropParams(
+            orientation=self.orientation,
+            description=entry.description,
+            sketches=_sketches(entry.references, {Orientation.TOWARDS_CAMERA, self.orientation}),
+        )
+
+class Stroke(Model):
+    """
+    One stroke of a freehand layer: a pen line through its points, or (erasing) a line that cuts through the layer's earlier strokes -- only that layer's, never what's beneath it.
+
+    Attributes:
+        points: list[float] - The line's points as flat x, y pairs (x1, y1, x2, y2, ...), in the layer's own space: (0, 0) is its centre, which its transform places.
+        colour: str - Pen colour, as #rrggbb. Defaults to black. Ignored for an erasing stroke.
+        width: float - Line width (in the layer's own pixels). Defaults to 4.
+        erase: bool - Whether the stroke erases rather than draws. Defaults to False.
+    """
+    points: list[float] = Field(min_length=2)
+    colour: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    width: float = Field(default=4.0, gt=0, le=200)
+    erase: bool = False
+
+    @model_validator(mode="after")
+    def points_are_pairs(self) -> "Stroke":
+        """
+        Rejects a stroke whose points don't come in x, y pairs.
+        """
+        if len(self.points) % 2:
+            raise ValueError("A stroke's points must be x, y pairs")
+        return self
+
+class FreehandLayer(LayerBase):
+    """
+    Freehand drawing, kept as vector strokes (each one undoable, and editable without losing the rest) rather than pixels -- drawn in order, so an erasing stroke takes out the strokes before it.
+
+    Attributes:
+        type: Literal["freehand"] - Layer type.
+        strokes: list[Stroke] - The strokes, in the order they were drawn. Defaults to [].
+    """
+    type: Literal["freehand"] = "freehand"
+    strokes: list[Stroke] = Field(default_factory=list)
 
 class GroupLayer(LayerBase):
     """
@@ -285,7 +399,7 @@ class GroupLayer(LayerBase):
 
 # Any one layer: Pydantic reads each layer's "type" field to pick which model to validate it as
 Layer = Annotated[
-    BackgroundLayer | CharacterLayer | PropLayer | TextLayer | ImageLayer | GroupLayer,
+    BackgroundLayer | CharacterLayer | PropLayer | TextLayer | ImageLayer | FreehandLayer | GroupLayer,
     Field(discriminator="type"),
 ]
 

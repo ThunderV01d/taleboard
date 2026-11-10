@@ -260,7 +260,8 @@ export function useUsage(
 }
 
 /**
- * Creates an entry, or edits one when given its ID.
+ * Creates an entry, or edits one when given its ID. An edit can put the layers drawn from it out of date, so the
+ * scenes and shots are refetched too.
  */
 export function useSaveEntry(projectId: string, kind: RegistryKind) {
   const queryClient = useQueryClient()
@@ -276,10 +277,13 @@ export function useSaveEntry(projectId: string, kind: RegistryKind) {
         ? editEntry(projectId, kind, entryId, fields)
         : createEntry(projectId, kind, fields),
     onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: registryKey(projectId, kind),
-        exact: true,
-      }),
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: registryKey(projectId, kind),
+          exact: true,
+        }),
+        queryClient.invalidateQueries({ queryKey: scenesKey(projectId) }),
+      ]),
   })
 }
 
@@ -309,7 +313,7 @@ export function useDeleteEntry(projectId: string, kind: RegistryKind) {
 
 /**
  * An entry's images, with a label for each: a character's or prop's reference per orientation, or a location's plate
- * per facing. Missing ones (not drawn yet) are listed with no URL.
+ * per facing (its slot). Missing ones (not drawn yet) are listed with no URL.
  */
 export function entryImages(
   kind: RegistryKind,
@@ -318,20 +322,29 @@ export function entryImages(
     orientations: Record<string, string>
     facings: Record<string, string>
   }
-): { label: string; facing?: string; url: string | null; sketched: boolean }[] {
+): {
+  slot: Schemas["Orientation"] | Schemas["Facing"]
+  label: string
+  url: string | null
+  sketched: boolean
+}[] {
   if (kind === "locations") {
     const plates = (entry as Location).plates
-    return Object.entries(labels.facings).map(([facing, label]) => ({
-      label,
-      facing,
-      url: plates[facing] ? (entry.image_urls[plates[facing]] ?? null) : null,
-      sketched: false,
-    }))
+    return Object.entries(labels.facings).map(([facing, label]) => {
+      const plate = plates[facing]
+      return {
+        slot: facing as Schemas["Facing"],
+        label,
+        url: plate ? (entry.image_urls[plate.image] ?? null) : null,
+        sketched: plate?.source === "sketch",
+      }
+    })
   }
   const references = (entry as Character | Prop).references
   return Object.entries(labels.orientations).map(([orientation, label]) => {
     const reference = references[orientation]
     return {
+      slot: orientation as Schemas["Orientation"],
       label,
       url: reference ? (entry.image_urls[reference.image] ?? null) : null,
       sketched: reference?.source === "sketch",

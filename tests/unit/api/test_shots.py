@@ -3,9 +3,11 @@ Unit tests for the shot routes.
 
 Uses FastAPI's test client against moto's fakes (see tests/unit/api/conftest.py), so no AWS calls are made.
 
-Covers creating shots with a starting background, reading and listing them with their image URLs, saving them (layer validation, registry checks and the version check), reordering them, and deleting them.
+Covers creating shots with a starting background, reading and listing them with their image URLs and what's out of date, saving them (layer validation, registry checks and the version check), reordering them, and deleting them.
 """
 import pytest
+
+from taleboard.generation.planning import Registry
 
 
 @pytest.fixture
@@ -166,7 +168,7 @@ def test_two_layers_with_the_same_id_are_a_422(client, scene):
     assert client.get(f"{scene['shots']}/{shot['id']}").json()["version"] == 0
 
 
-@pytest.mark.parametrize("layer", [{"type": "freehand"}, {"type": "character"}, {"type": "text", "opacity": 2}])
+@pytest.mark.parametrize("layer", [{"type": "camera"}, {"type": "character"}, {"type": "text", "opacity": 2}])
 def test_an_invalid_layer_is_a_422(client, scene, layer):
     """
     Verifies that an unknown layer type, a character without a character_id, or an out-of-range value is refused.
@@ -209,6 +211,29 @@ def test_a_save_cannot_move_a_shot_or_change_its_id(client, scene):
     saved = _save(client, scene, shot, order=7, scene_id="elsewhere", id="other").json()
 
     assert (saved["id"], saved["scene_id"], saved["order"]) == (shot["id"], scene["id"], 0)
+
+
+def test_every_shot_says_which_layers_are_out_of_date_and_what_changed(client, boards, scene):
+    """
+    Verifies out_of_date on the shot routes: a new shot's background is listed (never drawn), it's gone once drawn, and an edit to its location brings it back naming what changed -- on reading, listing and saving.
+    """
+    shot = _add(client, scene)
+    background_id = shot["layers"][0]["id"]
+    assert shot["out_of_date"] == {background_id: []}
+
+    # Drawn, as generation would: an image, and the params it was drawn from
+    stored = boards.get_shot(scene["pid"], scene["id"], shot["id"])
+    stored_scene = boards.get_scene(scene["pid"], scene["id"])
+    layer = stored.layers[0]
+    entry = Registry.load(boards, scene["pid"]).entry_for(layer, stored_scene)
+    drawn = layer.model_copy(update={"image": f"projects/{scene['pid']}/generated/plate.png", "last_generated_params": layer.current_params(stored.generation_context(stored_scene), entry)})
+    boards.save_shot(scene["pid"], stored.model_copy(update={"layers": [drawn]}))
+    assert client.get(f"{scene['shots']}/{shot['id']}").json()["out_of_date"] == {}
+
+    assert client.patch(f"/projects/{scene['pid']}/locations/office", json={"description": "A cramped harbour office"}).status_code == 200
+    assert client.get(scene["shots"]).json()[0]["out_of_date"] == {background_id: ["location_description"]}
+    current = client.get(f"{scene['shots']}/{shot['id']}").json()
+    assert _save(client, scene, current, shot_size="wide").json()["out_of_date"] == {background_id: ["shot_size", "location_description"]}
 
 
 def test_image_urls_cover_every_layer_image_in_this_project_only(client, boards, scene):

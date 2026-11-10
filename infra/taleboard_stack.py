@@ -11,6 +11,8 @@ Attributes:
     HAIKU_MODEL_ID: str - Foundation model behind that profile.
     GOOGLE_CLIENT_ID: str - Google OAuth client ID (not a secret -- it appears in every Google sign-in URL).
     GOOGLE_SECRET_NAME: str - Name of the Secrets Manager secret holding the Google client secret (created by hand).
+    GUEST_GROUP: str - The Cognito group the shared guest user is in (must match taleboard.auth.guest_session.GUEST_GROUP).
+    GUEST_THROTTLE: dict - Rate (requests a second) and burst limits of POST /auth/guest, for all callers together.
 """
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subscriptions
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_ssm as ssm
+from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk.aws_apigatewayv2_authorizers import HttpUserPoolAuthorizer
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from aws_cdk.aws_lambda_python_alpha import BundlingOptions, PythonFunction
@@ -44,7 +47,8 @@ HAIKU_PROFILE_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 HAIKU_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
 GOOGLE_CLIENT_ID = "862089955034-l63lk5q2j8m1jp23m65o2v8f3oeejdah.apps.googleusercontent.com"
 GOOGLE_SECRET_NAME = "taleboard/google-client-secret"
-
+GUEST_GROUP = "guests"
+GUEST_THROTTLE = {"ThrottlingRateLimit": 1, "ThrottlingBurstLimit": 5}
 
 class TaleboardStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
@@ -175,6 +179,31 @@ class TaleboardStack(Stack):
             cognito_domain=cognito.CognitoDomainOptions(domain_prefix=f"{self.stack_name.lower()}-{self.account}"),
         )
 
+                # The shared guest user -- made by the guest sign-in Lambda on first use (taleboard.auth.guest_session), in this
+        # group, with this password. The password only ever lives in Secrets Manager; the browser gets short-lived tokens
+        cognito.CfnUserPoolGroup(
+            self, "GuestGroup",
+            user_pool_id=user_pool.user_pool_id,
+            group_name=GUEST_GROUP,
+            description="The shared guest user -- the API lets it read the projects shared with it, and change nothing",
+        )
+        guest_password = secretsmanager.Secret(
+            self, "GuestPassword",
+            description="Password of the shared TaleBoard guest user (only the guest sign-in Lambda reads it)",
+            generate_secret_string=secretsmanager.SecretStringGenerator(password_length=40, exclude_punctuation=True, require_each_included_type=True),
+        )
+        # Its own app client, so its tokens can be short-lived -- the guest page asks for new ones rather than refreshing
+        guest_client = user_pool.add_client(
+            "GuestClient",
+            generate_secret=False,
+            disable_o_auth=True,
+            auth_flows=cognito.AuthFlow(admin_user_password=True),  # Only the Lambda's admin sign-in -- never a browser's
+            prevent_user_existence_errors=True,
+            access_token_validity=Duration.minutes(15),
+            id_token_validity=Duration.minutes(15),
+            refresh_token_validity=Duration.minutes(60),  # The least Cognito allows; never handed to the browser
+        )
+
         # Lambdas
         worker = lambda_.DockerImageFunction(
             self, "Worker",
@@ -199,9 +228,26 @@ class TaleboardStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             memory_size=512,
             timeout=Duration.seconds(15),
-            environment={**storage_env, "TALEBOARD_GENERATION_QUEUE_URL": generation_jobs.queue_url},
+            environment={
+                **storage_env,
+                "TALEBOARD_GENERATION_QUEUE_URL": generation_jobs.queue_url,
+                "TALEBOARD_GUEST_CLIENT_ID": guest_client.user_pool_client_id,  # A token from it is the guest's, read-only
+            },
             bundling=BundlingOptions(asset_excludes=["__pycache__", "*.egg-info"]),
             log_group=self._log_group("Api"),
+        )
+        guest_session_fn = lambda_.Function(
+            self, "GuestSessionFunction",
+            code=lambda_.Code.from_asset(str(SRC_DIR / "taleboard" / "auth"), exclude=["__pycache__"]),
+            handler="guest_session.handler",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            timeout=Duration.seconds(10),
+            environment={
+                "TALEBOARD_USER_POOL_ID": user_pool.user_pool_id,
+                "TALEBOARD_GUEST_CLIENT_ID": guest_client.user_pool_client_id,
+                "TALEBOARD_GUEST_SECRET": guest_password.secret_arn,
+            },
+            log_group=self._log_group("GuestSession"),
         )
         dead_letter_fn = PythonFunction(
             self, "DeadLetterFunction",
@@ -226,6 +272,11 @@ class TaleboardStack(Stack):
             bucket.grant_read_write(fn, "projects/*")
             generation_jobs.grant_send_messages(fn) # API enqueues; worker self-continues
         together_key.grant_read(worker)
+        guest_password.grant_read(guest_session_fn)
+        guest_session_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["cognito-idp:AdminInitiateAuth", "cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminAddUserToGroup"],
+            resources=[user_pool.user_pool_arn],
+        ))
         worker.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
             resources=[
@@ -252,7 +303,13 @@ class TaleboardStack(Stack):
             path="/{proxy+}",
             methods=[apigw.HttpMethod.GET, apigw.HttpMethod.POST, apigw.HttpMethod.PUT, apigw.HttpMethod.PATCH, apigw.HttpMethod.DELETE],
             integration=HttpLambdaIntegration("ApiIntegration", api_fn),
-            authorizer=HttpUserPoolAuthorizer("UserAuthorizer", user_pool, user_pool_clients=[web_client]),
+            authorizer=HttpUserPoolAuthorizer("UserAuthorizer", user_pool, user_pool_clients=[web_client, guest_client]),
+        )
+        # The one route without the authorizer: it's how a visitor gets the guest's tokens in the first place
+        guest_routes = http_api.add_routes(
+            path="/auth/guest",
+            methods=[apigw.HttpMethod.POST],
+            integration=HttpLambdaIntegration("GuestSessionIntegration", guest_session_fn),
         )
 
         stage = http_api.add_stage(
@@ -261,6 +318,12 @@ class TaleboardStack(Stack):
             auto_deploy=True,
             throttle=apigw.ThrottleSettings(rate_limit=5, burst_limit=10),
         )
+
+        # The guest sign-in gets a tighter limit of its own (HTTP APIs can't limit per IP -- that would need WAF). A
+        # browser only calls it every 15 minutes, as its token runs out
+        stage.node.default_child.add_property_override("RouteSettings", {"POST /auth/guest": GUEST_THROTTLE})
+        for route in guest_routes:
+            stage.node.add_dependency(route)  # The route must exist before the stage can name it
 
         # Alarm -- the dead-letter Lambda drains the DLQ at once, so alarm on messages received, not messages visible
         generation_alarm = cloudwatch.Alarm(

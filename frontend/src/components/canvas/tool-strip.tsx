@@ -8,59 +8,65 @@ import {
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-/** The canvas tools that work so far */
-export type Tool = "select" | "distort"
+/** The canvas tools */
+export type Tool = "select" | "distort" | "brush" | "eraser"
 
-const TOOLS: {
-  id: Tool | "brush" | "eraser"
-  label: string
-  icon: typeof BrushIcon
-}[] = [
+/** What the brush and eraser draw with: colour (#rrggbb) and width (in frame pixels) */
+export type Pen = { colour: string; width: number }
+
+const TOOLS: { id: Tool; label: string; icon: typeof BrushIcon }[] = [
   { id: "select", label: "Select and move (V)", icon: MousePointer2Icon },
   {
     id: "distort",
-    label: "Distort -- drag a picture's corners (D)",
+    label: "Distort -- drag a picture's or drawing's corners (D)",
     icon: VectorSquareIcon,
   },
-  { id: "brush", label: "Brush -- coming soon", icon: BrushIcon },
-  { id: "eraser", label: "Eraser -- coming soon", icon: EraserIcon },
+  {
+    id: "brush",
+    label: "Brush -- draw into the selected drawing, or a new one (B)",
+    icon: BrushIcon,
+  },
+  {
+    id: "eraser",
+    label: "Eraser -- rub out part of the selected drawing (E)",
+    icon: EraserIcon,
+  },
 ]
 
-function isTool(id: string): id is Tool {
-  return id === "select" || id === "distort"
-}
-
 /**
- * The tool strip down the left edge of the editor: Select and Distort, then the drawing tools still to come (shown
- * disabled, to mark where they'll go).
+ * The tool strip down the left edge of the editor: Select, Distort, the brush and the eraser -- only Select, when the
+ * project is read-only.
  */
 export function ToolStrip({
   tool,
   onTool,
+  readOnly = false,
 }: {
   tool: Tool
   onTool: (tool: Tool) => void
+  readOnly?: boolean
 }) {
   return (
     <nav
       aria-label="Tools"
       className="flex flex-col items-center gap-1 border-r p-1.5"
     >
-      {TOOLS.map(({ id, label, icon: Icon }) => (
-        <Button
-          key={id}
-          variant="ghost"
-          size="icon"
-          title={label}
-          aria-label={label}
-          aria-pressed={id === tool}
-          disabled={!isTool(id)}
-          className={cn(id === tool && "bg-muted")}
-          onClick={() => isTool(id) && onTool(id)}
-        >
-          <Icon />
-        </Button>
-      ))}
+      {TOOLS.filter(({ id }) => !readOnly || id === "select").map(
+        ({ id, label, icon: Icon }) => (
+          <Button
+            key={id}
+            variant="ghost"
+            size="icon"
+            title={label}
+            aria-label={label}
+            aria-pressed={id === tool}
+            className={cn(id === tool && "bg-muted")}
+            onClick={() => onTool(id)}
+          >
+            <Icon />
+          </Button>
+        )
+      )}
     </nav>
   )
 }

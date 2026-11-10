@@ -2,9 +2,11 @@ import {
   FlipHorizontal2Icon,
   FlipVertical2Icon,
   ImageUpIcon,
+  Link2Icon,
   LoaderCircleIcon,
   RotateCcwIcon,
   SparklesIcon,
+  Unlink2Icon,
   VectorSquareIcon,
 } from "lucide-react"
 import { useRef } from "react"
@@ -27,7 +29,9 @@ import {
 import type { LayerProgress } from "@/lib/generation"
 import { placedAt, type Layer, type Transform } from "@/lib/layers"
 import type { Character, Prop } from "@/lib/registries"
-import type { ShotFields } from "@/lib/shot-editor"
+import type { ShotFields } from "@/lib/shots"
+import { changesText, type Freshness } from "@/lib/staleness"
+import { cn } from "@/lib/utils"
 import { isPicture } from "@/lib/warp"
 
 /**
@@ -43,8 +47,9 @@ export type LayerEdit = (
  * The selected layer's properties (the top half of the right-hand panel): the shared ones -- name, position, size,
  * rotation, skew, flips, opacity -- and those of its type. Visibility is the eye in the layers panel.
  *
- * Generated layers show what they were drawn from (location and facing; character or prop and orientation), and a
- * button to draw them -- or draw them again -- with where that's up to.
+ * Generated layers show what they were drawn from (location and facing; character or prop and orientation), whether
+ * their picture is up to date (and if not, what's changed since it was drawn), and a button to draw them -- or draw
+ * them again, once something they're drawn from has changed -- with where that's up to.
  */
 export function LayerProperties({
   selected,
@@ -56,7 +61,12 @@ export function LayerProperties({
   onReplaceImage,
   onDistort,
   progress,
+  freshness,
+  unsaved,
+  scaleLocked,
+  onScaleLocked,
   onGenerate,
+  readOnly = false,
 }: {
   /** The selected layer, when exactly one is selected */
   selected: Layer | null
@@ -70,8 +80,17 @@ export function LayerProperties({
   onDistort: () => void
   /** Where the selected layer stands with generation, if anywhere */
   progress?: LayerProgress
+  /** Whether the selected layer's picture is up to date (null for a layer that isn't generated) */
+  freshness: Freshness | null
+  /** Whether there are edits not saved yet -- the server hasn't said whether they put the layer out of date */
+  unsaved: boolean
+  /** Whether width and height scale together (the chain link) */
+  scaleLocked: boolean
+  onScaleLocked: (locked: boolean) => void
   /** Asks for a generated layer to be drawn */
   onGenerate: (layerId: string) => void
+  /** Showing only -- no buttons that change, upload or draw (the fields themselves are disabled by a fieldset around this) */
+  readOnly?: boolean
 }) {
   if (selectionCount > 1) {
     return (
@@ -95,6 +114,30 @@ export function LayerProperties({
       (l) => ({ ...l, transform: { ...l.transform, [key]: value } }),
       `transform.${key}`
     )
+
+  // Locked, the other scale follows in proportion (keeping a flip); a 0 is passed over, as it would lose the shape --
+  // it's usually on the way to typing "0.5"
+  const setScale = (axis: "x" | "y", value: number) =>
+    onEditLayer((l) => {
+      const { scale_x, scale_y } = l.transform
+      const [mine, other] =
+        axis === "x" ? [scale_x, scale_y] : [scale_y, scale_x]
+      if (!scaleLocked) {
+        return { ...l, transform: { ...l.transform, [`scale_${axis}`]: value } }
+      }
+      if (value === 0 || mine === 0) {
+        return l
+      }
+      const follows = other * (value / mine)
+      return {
+        ...l,
+        transform: {
+          ...l.transform,
+          scale_x: axis === "x" ? value : follows,
+          scale_y: axis === "y" ? value : follows,
+        },
+      }
+    }, `transform.scale_${axis}`)
 
   return (
     <div className="space-y-5">
@@ -120,6 +163,7 @@ export function LayerProperties({
           locationName={locationName}
           onEditLayer={onEditLayer}
           onReplaceImage={onReplaceImage}
+          readOnly={readOnly}
         />
       </Section>
 
@@ -128,9 +172,11 @@ export function LayerProperties({
         layer.type === "prop") && (
         <Section title="Picture">
           <GenerateControls
-            drawn={layer.image !== null}
+            freshness={freshness ?? { state: "undrawn" }}
+            unsaved={unsaved}
             progress={progress}
             onGenerate={() => onGenerate(layer.id)}
+            readOnly={readOnly}
           />
         </Section>
       )}
@@ -149,22 +195,39 @@ export function LayerProperties({
             value={layer.transform.y}
             onChange={(v) => set("y", v)}
           />
-          <NumberField
-            id="t-sx"
-            label="Width scale"
-            value={layer.transform.scale_x}
-            step={0.05}
-            decimals={2}
-            onChange={(v) => set("scale_x", v)}
-          />
-          <NumberField
-            id="t-sy"
-            label="Height scale"
-            value={layer.transform.scale_y}
-            step={0.05}
-            decimals={2}
-            onChange={(v) => set("scale_y", v)}
-          />
+          <div className="col-span-2 grid grid-cols-[1fr_auto_1fr] items-end gap-1">
+            <NumberField
+              id="t-sx"
+              label="Width scale"
+              value={layer.transform.scale_x}
+              step={0.05}
+              decimals={2}
+              onChange={(v) => setScale("x", v)}
+            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn("mb-0.5", scaleLocked && "text-primary")}
+              aria-label="Keep width and height scale together"
+              aria-pressed={scaleLocked}
+              title={
+                scaleLocked
+                  ? "Width and height scale together -- click to set them separately"
+                  : "Width and height scale separately -- click to keep them together"
+              }
+              onClick={() => onScaleLocked(!scaleLocked)}
+            >
+              {scaleLocked ? <Link2Icon /> : <Unlink2Icon />}
+            </Button>
+            <NumberField
+              id="t-sy"
+              label="Height scale"
+              value={layer.transform.scale_y}
+              step={0.05}
+              decimals={2}
+              onChange={(v) => setScale("y", v)}
+            />
+          </div>
           <NumberField
             id="t-r"
             label="Rotation (°)"
@@ -239,7 +302,7 @@ export function LayerProperties({
               ? "Corners moved. Drag them with the Distort tool."
               : "Not distorted. Drag its corners with the Distort tool to fix its perspective."}
           </p>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2" hidden={readOnly}>
             <Button variant="outline" size="sm" onClick={onDistort}>
               <VectorSquareIcon />
               Distort (D)
@@ -396,6 +459,7 @@ function TypeProperties({
   locationName,
   onEditLayer,
   onReplaceImage,
+  readOnly,
 }: {
   layer: Layer
   characters: Character[]
@@ -403,6 +467,7 @@ function TypeProperties({
   locationName: string
   onEditLayer: LayerEdit
   onReplaceImage: (file: File) => void
+  readOnly: boolean
 }) {
   const file = useRef<HTMLInputElement>(null)
 
@@ -560,12 +625,23 @@ function TypeProperties({
           <Button
             variant="outline"
             size="sm"
+            hidden={readOnly}
             onClick={() => file.current?.click()}
           >
             <ImageUpIcon />
             Replace image
           </Button>
         </>
+      )
+    case "freehand":
+      return (
+        <p className="text-xs text-muted-foreground">
+          {layer.strokes.length === 1
+            ? "1 stroke."
+            : `${layer.strokes.length} strokes.`}{" "}
+          Draw into it with the brush (B), rub parts out with the eraser (E),
+          and warp it with Distort (D).
+        </p>
       )
     case "group":
       return null
@@ -601,42 +677,73 @@ function ReadOnly({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * A generated layer's picture: whether it's drawn, being drawn or waiting its turn (or why it couldn't be), and the
- * button to draw it -- again, if it already is.
+ * A generated layer's picture: whether it's up to date, out of date (and what changed), not drawn yet, being drawn or
+ * waiting its turn (or why it couldn't be), and the button to draw it. Drawing it again is only on offer once something
+ * it's drawn from has changed -- it would come out the same -- or while there are unsaved edits that might have.
  */
 function GenerateControls({
-  drawn,
+  freshness,
+  unsaved,
   progress,
   onGenerate,
+  readOnly,
 }: {
-  drawn: boolean
+  freshness: Freshness
+  unsaved: boolean
   progress?: LayerProgress
   onGenerate: () => void
+  /** Saying where it stands, with no button */
+  readOnly: boolean
 }) {
   const busy = progress?.state === "drawing" || progress?.state === "waiting"
+  const upToDate = freshness.state === "current" && !unsaved
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">
+      <p
+        className={cn(
+          "text-xs text-muted-foreground",
+          !busy &&
+            freshness.state === "stale" &&
+            "text-amber-600 dark:text-amber-400"
+        )}
+      >
         {progress?.state === "drawing"
           ? "Drawing it now..."
           : progress?.state === "waiting"
             ? "Waiting its turn to be drawn."
-            : drawn
-              ? "Drawn."
-              : "Not drawn yet -- the canvas shows a placeholder (or its reference)."}
+            : freshness.state === "stale"
+              ? `Out of date: ${changesText(freshness.changes)} changed since it was drawn.`
+              : freshness.state === "current"
+                ? "Up to date -- nothing it's drawn from has changed."
+                : "Not drawn yet -- the canvas shows a placeholder (or its reference)."}
       </p>
       {progress?.state === "failed" && (
         <p className="text-xs text-destructive">
           Couldn&apos;t be drawn: {progress.error}
         </p>
       )}
-      <Button variant="outline" size="sm" disabled={busy} onClick={onGenerate}>
+      <Button
+        variant="outline"
+        size="sm"
+        hidden={readOnly}
+        disabled={busy || upToDate}
+        title={
+          upToDate
+            ? "Nothing it's drawn from has changed, so it would come out the same"
+            : undefined
+        }
+        onClick={onGenerate}
+      >
         {busy ? (
           <LoaderCircleIcon className="animate-spin" />
         ) : (
           <SparklesIcon />
         )}
-        {busy ? "Drawing..." : drawn ? "Draw again" : "Generate"}
+        {busy
+          ? "Drawing..."
+          : freshness.state === "undrawn"
+            ? "Generate"
+            : "Regenerate"}
       </Button>
     </div>
   )

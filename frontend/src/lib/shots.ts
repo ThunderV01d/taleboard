@@ -8,12 +8,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import type { components } from "@/api/schema"
 import { api, ensureOk, unwrap } from "@/lib/api"
+import type { Saved } from "@/lib/canvas-editor"
 import { scenesKey } from "@/lib/scenes"
 
 export type Shot = components["schemas"]["ShotOut"]
 export type ShotIn = components["schemas"]["ShotIn"]
 export type ShotSave = components["schemas"]["ShotSave"]
 export type Layer = Shot["layers"][number]
+
+/** The shot fields edited alongside the layers */
+export type ShotFields = Pick<
+  Shot,
+  "description" | "duration_s" | "shot_size" | "angle" | "details"
+>
 
 /** Cache key for a scene's shots -- under the scene's, so deleting the scene drops them */
 export function shotsKey(projectId: string, sceneId: string) {
@@ -163,6 +170,20 @@ export function toSave(shot: Shot): ShotSave {
     details: shot.details,
     layers: shot.layers,
     version: shot.version,
+  }
+}
+
+/**
+ * A shot as the canvas editor holds it: its framing and layers, at its version.
+ */
+export function savedShot(shot: Shot): Saved<ShotFields> {
+  const { description, duration_s, shot_size, angle, details, layers } = shot
+  return {
+    version: shot.version,
+    draft: {
+      fields: { description, duration_s, shot_size, angle, details },
+      layers,
+    },
   }
 }
 

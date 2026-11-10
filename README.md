@@ -3,11 +3,11 @@
 
 Turn a story into an editable storyboard! You, the user, have control of framing, blocking, and pacing.
 
-**Status: release 0.2.0 in progress.** The live site runs release 0.1.0: a story goes in, and a finished storyboard comes out, generated end to end on AWS (Bedrock for the breakdown, Together AI for the images, DynamoDB + S3 for storage). Release 0.2.0, on `main`, turns that storyboard into something you edit: sign-in, projects with registries of characters, locations and props, scenes, and a canvas editor where every shot is a stack of layers -- each one generated, and redrawn, on its own. A project can start blank or from a story, which is broken down into scenes and shots and (by default) drawn. Regenerating a layer when what it depends on changes, and freehand sketching, are the last milestone before release. See [Status](#status) below for exactly what works today.
+**Status: release 0.2.0.** TaleBoard is a storyboard editor with AI-assisted generation, running on AWS (Bedrock for the story breakdown, Together AI for the images, DynamoDB + S3 for storage, Cognito for accounts). Sign in, keep registries of characters, locations and props, and lay out scenes of shots on a canvas editor where every shot is a stack of layers -- each one generated, and redrawn, on its own, only when something it was drawn from has changed. A project can start blank or from a story, which is broken down into scenes and shots and (by default) drawn. Any character's, prop's or location's picture can be replaced by your own sketch, drawn in the same editor. Visitors can browse a few example projects as a guest, read-only, without an account. See [Status](#status) below for exactly what works today.
 
 ## What this is
 
-Most "AI storyboard" tools hand you a finished image and hope it's right. TaleBoard is built around a different idea: the model's job is to propose a starting point (who's in a shot, where they're positioned, how they're framed), not to be the final word on it. Each shot is a stack of editable layers: the background, each character and each prop can be moved, resized, flipped, skewed or perspective-warped directly on the canvas, so fixing the blocking is free and instant. A generation is only redone when the user explicitly asks for it, one layer at a time, and it keeps that layer's placement.
+Most "AI storyboard" tools hand you a finished image and hope it's right. TaleBoard is built around a different idea: the model's job is to propose a starting point (who's in a shot, where they're positioned, how they're framed), not to be the final word on it. Each shot is a stack of editable layers: the background, each character and each prop can be moved, resized, flipped, skewed or perspective-warped directly on the canvas, so fixing the blocking is free and instant. A generation is only redone when the user explicitly asks for it, one layer at a time, and it keeps that layer's placement -- and the editor says which layers are out of date, and why. Where the model can't get a look right, you can draw it yourself: freehand drawing works on any shot, and a sketch can stand in for any character's, prop's or location's reference picture.
 
 A story is broken into scenes (each a run of paragraphs in one place, at one time), each paragraph into one or more shots, and each shot into a facing plus the characters and props in it (position, size, orientation, and who's holding what) -- all validated against a strict schema rather than trusted as free text.
 
@@ -33,12 +33,14 @@ A story is broken into scenes (each a run of paragraphs in one place, at one tim
 - **Transient error handling** -- a spurious 400 from Together AI is retried with growing waits; a request it keeps rejecting, or a prompt refused under its safety policy, fails only that layer. Image-to-image requests get two minutes before they count as stalled.
 
 **Working, deployed on AWS:**
-- **Persistence** -- a project lives in a single DynamoDB table (metadata, registries, scenes, one item per shot holding its layer graph, and jobs), with every image in S3.
-- **HTTP API** -- FastAPI on Lambda behind API Gateway, one router per resource: projects; their characters, locations and props (each delete reports what it takes with it first); scenes, each pinned to a location with a time of day and atmosphere; shots; drag-to-reorder for scenes and shots; presigned browser uploads straight to S3 (PNG or JPEG, up to 10 MB); generation; and story import. Shot saves are version-checked, so a save over someone else's newer one is refused (409) rather than lost. Images are returned as presigned S3 URLs, so image bytes never pass through the API.
+- **Persistence** -- a project lives in a single DynamoDB table (metadata, registries, sketches, scenes, one item per shot holding its layer graph, jobs, and who it's shared with), with every image in S3.
+- **HTTP API** -- FastAPI on Lambda behind API Gateway, one router per resource: projects; their characters, locations and props (each delete reports what it takes with it first); scenes, each pinned to a location with a time of day and atmosphere; shots; drag-to-reorder for scenes and shots; presigned browser uploads straight to S3 (PNG or JPEG, up to 10 MB); each registry entry's sketches; generation; story import; and sharing a project to view. Every shot comes back saying which of its layers are out of date and what changed, worked out by the same rule generation uses to pick what to draw. Shot saves are version-checked, so a save over someone else's newer one is refused (409) rather than lost. Images are returned as presigned S3 URLs, so image bytes never pass through the API.
 - **Generation jobs** -- asking to generate a layer, a shot, a scene or the whole project first previews how many layers it would draw and, at most, how many images that takes; confirming saves a job with one task per layer and queues it. Jobs go on an SQS FIFO queue grouped by project, so a project's jobs run one at a time, in order, while different projects' run side by side. The worker draws each layer and saves it straight into its shot (a version-checked save, retried if the user saved meanwhile), and a job that needs longer than one Lambda run hands itself on to a fresh one, carrying on from its first unfinished layer.
 - **Story imports** -- an import is a job too: the story is saved beside it, and the worker breaks it down (every LLM call happens before anything is written), writes the registries, scenes and shots, and -- if asked to draw everything -- queues a generation job for every layer behind itself. A story that can't be broken down (eg:- one with no characters) fails at once with the reason.
 - **Failure handling** -- a layer that can't be drawn fails alone, and its job goes on. A failure a retry might fix fails the delivery, which is retried a minute later, for up to 5 attempts; a job that still can't finish lands on a dead-letter queue, where a recovery Lambda marks it failed (with a CloudWatch alarm).
-- **Infrastructure as code** -- the whole backend is one AWS CDK (Python) stack with least-privilege IAM: each Lambda can reach only what it uses, and deploys run through CDK's bootstrap roles rather than an admin user. The Together AI key lives in SSM Parameter Store, the API is throttled, and the worker runs at most two jobs at once, as cost guards. Every request needs a Cognito access token, checked by an API Gateway JWT authorizer before the API runs, and each project belongs to the user who made it -- anyone else gets the same 404 as for a missing project. The app defines two stacks: `TaleboardStack` (the live 0.1.0 release) and `TaleboardStack-dev` (0.2.0 development). The worker image installs its dependencies before copying the code, so a code-only change rebuilds (and uploads) one small layer in seconds rather than the whole 2.4GB image.
+- **Infrastructure as code** -- the whole backend is one AWS CDK (Python) stack with least-privilege IAM: each Lambda can reach only what it uses, and deploys run through CDK's bootstrap roles rather than an admin user. The Together AI key lives in SSM Parameter Store, the API is throttled, and the worker runs at most two jobs at once, as cost guards; an AWS Budget (a small stack of its own) emails when the month's spending passes set shares of it. Every request needs a Cognito access token, checked by an API Gateway JWT authorizer before the API runs, and each project belongs to the user who made it -- anyone else gets the same 404 as for a missing project. The app defines two stacks: `TaleboardStack` (the live 0.1.0 release) and `TaleboardStack-dev` (0.2.0 development). The worker image installs its dependencies before copying the code, so a code-only change rebuilds (and uploads) one small layer in seconds rather than the whole 2.4GB image.
+- **Permissions** -- one check decides every project route: reading needs at least view access, any change needs edit access, and a project you have no access to is the same 404 as one that doesn't exist. A project's owner can share it with another user to view (editing is reserved for later collaboration).
+- **Guest access** -- "Browse as guest" signs every visitor in as one shared, read-only Cognito user, whose tokens a small public Lambda hands out (`POST /auth/guest`, throttled on its own). Its password lives only in Secrets Manager, its tokens last 15 minutes, and the browser never gets a refresh token. The API refuses the guest every change outright -- even creating a project of its own -- so it can never spend money.
 - **Accounts** -- Amazon Cognito: sign up with an email and password (confirmed by an emailed code), or sign in with Google. A first Google sign-in is linked to an existing confirmed account with the same email, by a pre-sign-up Lambda, so one person never ends up with two accounts; a password sign-up for an email that already uses Google is refused.
 
 **Working, web frontend** (`frontend/`):
@@ -47,6 +49,11 @@ A story is broken into scenes (each a run of paragraphs in one place, at one tim
 - **Scenes and shots** -- a scene picker (drag to reorder) and a deck of the scene's shots along the bottom (drag to reorder).
 - **Canvas editor** -- each shot is a stack of layers: a background, characters, props, text, uploaded images and groups. Layers are moved, resized, rotated, skewed and flipped on the canvas or by number, dragged in the layer tree to reorder them or into groups, and shown, hidden or deleted (with a confirmation listing what a group takes with it). Pictures can be perspective-warped with the Distort tool, by dragging their corners.
 - **Generation** -- generate one layer, the open shot, or everything in the project. Layers waiting or being drawn are marked as such, a failed layer says why, and drawn images are merged into whatever you're editing rather than overwriting it.
+- **Out-of-date layers** -- a layer whose picture no longer matches what it's drawn from says so ("Out of date: the shot size and the description changed since it was drawn"), with a marker in the layer tree and a count on each shot in the deck. That covers its registry entry too: editing a character's description, or sketching their reference, marks every layer drawn from it. Regenerate is only offered when there's something to change.
+- **Drawing** -- freehand drawings, kept as vector strokes: a brush, an eraser that rubs out only the drawing it's used on, and Distort to warp a drawing point by point.
+- **Sketches** -- the drawing pad is the canvas editor opened on a registry entry's picture (a character's or prop's orientation, or a location's side): draw it, or start from an uploaded picture or the current one, then use it. It's flattened into the picture every shot is drawn from (a character's or prop's paper cut away, unless you keep it), and kept, so it can be reopened and edited layer by layer.
+- **Viewing** -- zoom (with the buttons, Ctrl and the wheel) and pan (the wheel, or dragging with Space held); a chain link keeps a layer's width and height in proportion; and coming back from a registry opens the shot you were on.
+- **Browsing as a guest** -- the shared example projects open read-only: layers can be picked and their details read, and the view zoomed and panned, but nothing can be changed.
 - **Saving** -- every edit is undoable, and the shot saves itself a moment after you stop. If the same shot was saved somewhere else in the meantime, you choose which version to keep.
 
 **Known issues:**
@@ -58,12 +65,13 @@ A story is broken into scenes (each a run of paragraphs in one place, at one tim
 - **Character/background compositing has no perspective or scale matching.** A character cutout and its background are two independently generated images; the only thing tying them together is sharing the same camera-angle wording. This was an explicit, accepted trade-off rather than an oversight -- true scene-consistent compositing would need real 3D scene reasoning neither generation call does. In practice, a receding hallway background makes characters look like flat cutouts pasted onto the side walls, since nothing accounts for the scene's vanishing point. This can be mitigated in the editor: a cutout can be skewed, or perspective-warped with the Distort tool, towards a background's vanishing point when it's visibly off.
 - **Re-framed backgrounds can drift in small details.** A medium shot or a low/high angle of a location is a new generation from its plate, guided by generic camera wording. The room stays recognisably the same, but small details (a window's pane count, a desk's design) can differ from the plate. Close-ups are exact, since they're crops.
 - **Close-ups are always full-body.** Every character image is a whole figure, so a close-up is a closer view of the scene, never a face filling the frame.
+- **Night interiors are lit by their own lights.** Indoors at night, a place keeps its lamps on and only what looks outside goes dark -- so a station stays bright, but a room with no windows comes out moodier than its lights would make it, and a glass sign (a departure board) can go black.
+- **No password reset in the app.** A forgotten password can only be reset with the AWS CLI (`aws cognito-idp forgot-password`) for now.
 - **Cold starts are slow.** The first job after a quiet period waits about a minute for the worker to start, most likely Lambda loading the 2.4GB container image. Slimming the image is the planned fix.
 
 **Not yet built:**
-- Regenerating a layer when what it depends on has changed (the layers already record what they were drawn from), and replacing a registry entry's reference or plate with a sketch.
-- Freehand drawing on the canvas (the brush and eraser tools are placeholders).
-- Exporting a storyboard as an image or PDF.
+- Exporting a storyboard as images or a PDF (planned for 0.3, drawn in the browser by the same renderer as the canvas).
+- Editing a shared project together (the permissions already reserve an editor role), and inviting people by email.
 
 ## Canvas Editor
 
@@ -76,15 +84,19 @@ Each shot is a persistent **layer graph** rather than a single flattened image, 
 | `prop` | a prop from the registry (generated) |
 | `text` | a caption or line of dialogue |
 | `image` | a user-uploaded image |
+| `freehand` | a drawing, kept as vector strokes (points, colour, width, and whether it erases) |
 | `group` | a nested container whose transform and opacity apply to its children (eg:- a character and the prop they hold) |
 
 Every layer, groups included, has one transform (position, scale, rotation, skew), opacity, visibility and a name. That one transform covers move, resize, flip and skew uniformly; a picture can also be perspective-warped by moving its four corners. Coordinates are in a 1024 x 1024 frame, with a layer's position at its centre (see `frontend/README.md` for the exact conventions).
 
-**Regeneration** applies only to generated layers. Each records the parameters its image was drawn from (facing, framing, angle, details, time of day, atmosphere, orientation, action), so a change to any of those marks it out of date, while moves, warps and restyles never do. Regenerating replaces just that layer's image and keeps its transform, corners, group and place in the stack.
+**Regeneration** applies only to generated layers. Each records the parameters its image was drawn from -- its own (facing, orientation, action), its shot's and scene's (framing, angle, details, time of day, atmosphere), and its registry entry's (a description, a location's setting and views, and any sketch it's drawn from) -- so a change to any of those marks it out of date, while moves, warps and restyles never do. The editor shows what changed, and only offers to regenerate a layer that's out of date. Regenerating replaces just that layer's image and keeps its transform, corners, group and place in the stack.
+
+**Freehand drawings** keep their strokes as vectors rather than pixels, so each stroke is one undo step, and a drawing can be moved, resized or warped without blurring. An erasing stroke cuts through its own drawing's earlier strokes, never what's beneath it. A shot holds at most 20,000 stroke points (DynamoDB's item size limit).
+
+**Sketches** are the same layer graph, edited in the same editor, on a frame the shape of the picture they stand in for (512 x 1024 for a character, square for a prop or a location side). Using one flattens it in the browser into a PNG, uploads it straight to S3, and makes it the entry's picture; the sketch itself is kept, to be opened again.
 
 **Storage** is hybrid. Layer images are S3 object keys, served to the frontend through presigned URLs so image bytes never pass through the API; the layer graph itself is stored inline in the shot's DynamoDB item.
 
-**Still planned:** freehand drawing, stored as vector strokes (points, colour, width) so individual strokes stay editable, and rasterized only when the shot is flattened.
 
 ## How it works
 
@@ -101,13 +113,19 @@ Every layer, groups included, has one transform (position, scale, rotation, skew
 2. **Drawing** -- the worker draws each task's layer in turn. A background walks its chain (plate, framing, details, lighting); a character finds or draws their reference for the orientation, then the pose; a prop finds or draws its reference. Every image is looked up by its content key first, so anything drawn before -- in this shot or any other -- costs nothing.
 3. **Saving** -- each finished layer is saved straight into its shot with its image and the parameters it was drawn from, then its task is marked done, so the editor can show it at once. A retried or handed-over job carries on from its first unfinished task.
 
+**Sharing and guest access:**
+
+1. **Sharing** -- a project's owner shares it with another user (`PUT /projects/{id}/shares/{user_id}`, viewer only for now). The share is stored in the project's own partition, and the projects index lists it under its grantee, so "shared with me" is one query, and deleting the project deletes its shares.
+2. **Guests** -- `POST /auth/guest` signs in as the shared guest user (creating it, in the `guests` group, the first time) and returns its short-lived tokens. The frontend keeps them apart from Amplify's session, asks for new ones shortly before they run out, and switches cleanly to a real session when the guest signs in or up.
+3. **Read-only, enforced twice** -- every project route checks the user's access (viewer, editor or owner), and the guest is refused every change on top of that, whatever it has been shared. The editor hides what can't be used, but the API is what refuses it.
+
 ## Tech stack
 
 - **Python 3.13**, **Pydantic v2** for schema validation and JSON-schema generation
 - **AWS Bedrock** (Claude Haiku 4.5, via `boto3`) for structured LLM output -- chosen specifically to demonstrate real AWS usage on a tight budget (native structured outputs avoid unreliable free-text JSON parsing, and Haiku 4.5's pricing keeps this well under £5/month at expected usage)
 - **Together AI** (FLUX.2-dev) for all image generation: characters, props and backgrounds. This was chosen as it allows image-conditioned prompts -- an important feature to ensure character and location consistency across shots. It is also fairly cheap to run ($0.0154/image).
 - **Pillow**, **NumPy** and **SciPy**, plus an isnet-anime-based background removal model (rembg, run on CPU), for turning a raw generation into a clean, background-free, monochrome cutout
-- **AWS Lambda**, **API Gateway** (HTTP API), **SQS** (a FIFO queue, with a dead-letter queue), **DynamoDB**, **S3**, **SSM Parameter Store** and **CloudWatch**, all defined in one **AWS CDK** (Python) stack
+- **AWS Lambda**, **API Gateway** (HTTP API), **SQS** (a FIFO queue, with a dead-letter queue), **DynamoDB**, **S3**, **SSM Parameter Store**, **Secrets Manager** and **CloudWatch**, all defined in one **AWS CDK** (Python) stack, with an **AWS Budget** in a stack of its own
 - **Amazon Cognito** for accounts (email and password, or Google), with an API Gateway JWT authorizer in front of every route
 - **FastAPI** (served on Lambda via Mangum) for the API. The worker runs as a **Docker** container image, since the generation dependencies are too big for a zipped Lambda; the background-removal model and compiled code are baked in, so a cold start never downloads anything
 - **React**, **Vite** and **TypeScript** for the frontend, with **Tailwind** and **shadcn/ui** for styling, **TanStack Query** for server state, **Konva** (`react-konva`) for the canvas, **dnd-kit** for drag-and-drop, **Amplify** for sign-in, **Vitest** for unit tests, and API types generated from the FastAPI app's OpenAPI schema
@@ -123,7 +141,8 @@ src/
     │   ├── enums.py          # closed vocabularies fed to the LLM (shot size, camera angle, orientation, facing, ...)
     │   ├── base.py           # the base model: response schemas list fields with defaults as required, for exact frontend types
     │   ├── layers.py         # the layer graph: layer types, transforms, corners, and what each generated layer was drawn from
-    │   ├── storyboard.py     # projects: registries, scenes and shots
+    │   ├── storyboard.py     # projects: registries, sketches, scenes and shots
+    │   ├── sharing.py        # shares, and what each user may do with a project
     │   └── generation.py     # jobs: generation jobs and their tasks, and story imports
     ├── parsing/
     │   ├── llm_schemas.py     # Pydantic models for LLM input/output, including cast-, prop- and location-constrained schema builders
@@ -142,7 +161,7 @@ src/
     │   ├── prompts.py          # FLUX prompts: plates, framings, details, lighting, character and prop references, poses
     │   ├── engine.py           # draws (or finds) a layer's image: the background chain, references and poses
     │   ├── cutouts.py          # cutting out, checking, monochrome, trimming and fitting; the flood fill for props
-    │   ├── planning.py         # which layers a Generate request draws, and at most how many images that takes
+    │   ├── planning.py         # which layers a Generate request draws (and what's out of date), and at most how many images that takes
     │   ├── together_caller.py  # Together AI FLUX.2-dev image generation (character and square sizes, reference images, retries)
     │   └── background_removal.py  # isnet-anime based background removal
     ├── storage/
@@ -155,27 +174,32 @@ src/
     │   ├── import_worker.py    # breaks a story down into a project, then queues its drawing
     │   └── dead_letters.py     # recovery Lambda: marks dead-lettered jobs failed
     ├── auth/
-    │   └── link_accounts.py    # pre-sign-up Lambda: links a Google sign-in to an existing account with the same email
+    │   ├── link_accounts.py    # pre-sign-up Lambda: links a Google sign-in to an existing account with the same email
+    │   └── guest_session.py    # POST /auth/guest Lambda: the shared guest user's short-lived tokens
     └── api/
         ├── app.py              # FastAPI app (served on Lambda via Mangum)
-        ├── deps.py             # the signed-in user, each project's ownership check, the job queue
-        └── routes/             # projects, registries, scenes, shots, uploads, generation, imports
+        ├── deps.py             # the signed-in user, the permission check every project route uses, the guest lock, the job queue
+        └── routes/             # projects, registries (and sketches), scenes, shots, uploads, generation, imports, shares
 
 frontend/                       # React + Vite web app (see frontend/README.md)
 └── src/
     ├── api/schema.d.ts         # API types, generated from the FastAPI app (npm run gen:api)
-    ├── lib/                    # API client, sign-in, data hooks, generation, the layer graph, editor state, warp maths (+ tests)
-    ├── pages/                  # landing, sign-in, projects, project editor, registries
+    ├── lib/                    # API client, sign-in and guest sessions, data hooks, generation, the layer graph, editor state, drawing, warp and zoom maths (+ tests)
+    ├── pages/                  # landing, sign-in, projects, project editor, registries, the drawing pad
     └── components/             # header, new-project dialog, scene picker, shot deck, canvas editor, registries, shared dialogs
 
 docker/
 ├── worker.Dockerfile           # worker container image: generation stack + baked background-removal model
 └── worker-entrypoint.sh        # copies the precompiled numba cache into /tmp before starting the Lambda runtime
 
-infra/                          # AWS CDK app (Python): one stack for the whole backend
+infra/                          # AWS CDK app (Python): one stack for the whole backend, and one for the budget
 ├── app.py
 ├── taleboard_stack.py
-└── cdk.json                    # CDK settings, incl. the allowed CORS origin(s)
+├── budget_stack.py             # the account's monthly AWS budget and its email alerts
+└── cdk.json                    # CDK settings, incl. the allowed CORS origin(s) and the alert email
+
+scripts/
+└── share_with_guest.py         # shares one of your projects with the guest user (or stops sharing it)
 
 tests/
 ├── conftest.py                 # loads .env credentials before any test runs
@@ -202,7 +226,7 @@ python -m pytest tests/integration/generation -m integration -s   # real Togethe
 The live tests print what the models returned, and the generation ones write labelled contact sheets to `tests/integration/generation/output/` (git-ignored) for judging the prompts by eye. Images already drawn are reused, so a rerun costs nothing.
 
 ### Deploying to AWS
-Needs Docker running (the worker image and Lambda packages are built locally), Node.js for the CDK CLI, and Bedrock access to Claude Haiku 4.5 in eu-west-2. Set your own AWS account ID in `infra/app.py`, and store your Together AI key in SSM Parameter Store as the SecureString `/taleboard/together-api-key`. For Google sign-in, create an OAuth client in Google Cloud, put its client ID in `GOOGLE_CLIENT_ID` in `infra/taleboard_stack.py`, and store its client secret in Secrets Manager as `taleboard/google-client-secret`. `corsOrigin` in `infra/cdk.json` takes a comma-separated list of the frontend origins (eg:- the deployed frontend and `http://localhost:5173`); each becomes a CORS origin and a sign-in callback URL.
+Needs Docker running (the worker image and Lambda packages are built locally), Node.js for the CDK CLI, and Bedrock access to Claude Haiku 4.5 in eu-west-2. Set your own AWS account ID in `infra/app.py`, and store your Together AI key in SSM Parameter Store as the SecureString `/taleboard/together-api-key`. For Google sign-in, create an OAuth client in Google Cloud, put its client ID in `GOOGLE_CLIENT_ID` in `infra/taleboard_stack.py`, and store its client secret in Secrets Manager as `taleboard/google-client-secret`. `corsOrigin` in `infra/cdk.json` takes a comma-separated list of the frontend origins (eg:- the deployed frontend and `http://localhost:5173`); each becomes a CORS origin and a sign-in callback URL. Put your email in `alarmEmail` there too: it receives the dead-letter alarm and the budget's alerts (without it, the budget stack isn't created).
 
 ```bash
 npm install -g aws-cdk
@@ -210,9 +234,23 @@ pip install -r infra/requirements.txt
 cd infra
 cdk bootstrap                  # once per account and region
 cdk deploy TaleboardStack-dev  # prints the API URL, user pool, app client and sign-in domain
+cdk deploy TaleboardBudget     # once per account: the monthly budget and its email alerts
 ```
 
+The live stack is deployed the same way, allowing only the deployed frontend: `cdk deploy TaleboardStack -c corsOrigin=https://taleboard.vercel.app`.
+
 Then add the Cognito domain's `/oauth2/idpresponse` URL to the Google OAuth client's authorised redirect URIs. The API is meant to be used through the frontend: every route needs a Cognito access token as `Authorization: Bearer ...`.
+
+### Sharing example projects with guests
+Make the projects in the app as usual, then share each one with the guest user. The script signs in as you (the project's owner) and needs no AWS credentials -- just the stack's `ApiUrl` and `UserPoolClientId` outputs and your TaleBoard email; it asks for your password. A project's ID is the last part of its editor address.
+
+```bash
+python scripts/share_with_guest.py share  PROJECT_ID --api API_URL --client-id CLIENT_ID --email YOU@EXAMPLE.COM
+python scripts/share_with_guest.py list   PROJECT_ID --api API_URL --client-id CLIENT_ID --email YOU@EXAMPLE.COM
+python scripts/share_with_guest.py revoke PROJECT_ID --api API_URL --client-id CLIENT_ID --email YOU@EXAMPLE.COM
+```
+
+Guests see your changes to a shared project as soon as they reload it.
 
 On Windows, if a deploy fails with `EPERM: operation not permitted, rename ...` in `cdk.out`, something (usually antivirus scanning the fresh bundle) is holding the folder: delete `infra/cdk.out` and deploy again.
 

@@ -9,7 +9,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import type { components } from "@/api/schema"
 import { api, ensureOk, unwrap } from "@/lib/api"
 
-export type Project = components["schemas"]["Project"]
+/** A project, with what the signed-in user may do with it (access): their own, or shared with them */
+export type Project = components["schemas"]["ProjectOut"]
+
+/**
+ * Whether the signed-in user may change a project -- false for one shared with them to view (and the guest's), which
+ * opens read-only, and while it's still loading.
+ */
+export function canEdit(project: Project | undefined): boolean {
+  return project?.access === "owner" || project?.access === "editor"
+}
 
 /** Must match the API's limit on project names (ProjectIn) */
 export const MAX_NAME_LENGTH = 200

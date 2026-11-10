@@ -1,5 +1,12 @@
-import { ImageOffIcon, Trash2Icon } from "lucide-react"
-import { useState, type FormEvent } from "react"
+import {
+  ImageOffIcon,
+  PencilIcon,
+  SparklesIcon,
+  Trash2Icon,
+  UploadIcon,
+} from "lucide-react"
+import { useRef, useState, type FormEvent } from "react"
+import { useNavigate } from "react-router"
 
 import { EnumSelect } from "@/components/enum-select"
 import { Badge } from "@/components/ui/badge"
@@ -18,6 +25,8 @@ import {
   type RegistryKind,
   type Views,
 } from "@/lib/registries"
+import { sketchPath, useStopUsingSketch, type Slot } from "@/lib/sketches"
+import { UPLOAD_TYPES } from "@/lib/uploads"
 
 /** Must match the API's limits (EntryIn, View) */
 const MAX_NAME = 100
@@ -30,11 +39,15 @@ const FACINGS = Object.keys(FACING_LABELS) as (keyof typeof FACING_LABELS)[]
  * One registry entry, opened in place of the grid: its reference images (or a location's plates), and its name,
  * description and -- for characters -- aliases. With no entry, it's the form for a new one.
  *
+ * Any of its images can be sketched instead of generated: "Sketch" opens the drawing pad on it, "Upload" opens the
+ * pad with a picture already in it, and "Use generated" goes back to a generated image (keeping the sketch).
+ *
+ * Read-only (a project shared with the user to view), it shows the entry and its images, and changes nothing.
+ *
  * A location also has a setting (indoors or out) and a line for what's on each side of it: each facing's view is drawn
  * from its own line plus the description, so the four views show different sides of the same place. A side with no
  * line shows the north view.
  *
- * Drawing the images (sketching, or generating) comes later: sketches in Milestone 5, generation in Milestone 4.
  */
 export function EntryEditor({
   projectId,
@@ -43,6 +56,7 @@ export function EntryEditor({
   onSaved,
   onBack,
   onDelete,
+  readOnly = false,
 }: {
   projectId: string
   kind: RegistryKind
@@ -50,6 +64,7 @@ export function EntryEditor({
   onSaved: (entry: Entry) => void
   onBack: () => void
   onDelete: (entry: Entry) => void
+  readOnly?: boolean
 }) {
   const saveEntry = useSaveEntry(projectId, kind)
   const [name, setName] = useState(entry?.name ?? "")
@@ -66,6 +81,29 @@ export function EntryEditor({
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const one = REGISTRY_NAMES[kind].one
+  const navigate = useNavigate()
+  const stopUsingSketch = useStopUsingSketch(projectId, kind, entry?.id ?? "")
+  // "Upload" picks a file for this slot, then opens the pad with it
+  const file = useRef<HTMLInputElement>(null)
+  const [uploadSlot, setUploadSlot] = useState<Slot | null>(null)
+
+  const sketch = (slot: Slot, upload?: File) => {
+    if (entry) {
+      void navigate(
+        sketchPath(projectId, kind, entry.id, slot),
+        upload && { state: { upload } }
+      )
+    }
+  }
+
+  const backToGenerated = async (slot: Slot) => {
+    setError(null)
+    try {
+      await stopUsingSketch.mutateAsync(slot)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -115,13 +153,27 @@ export function EntryEditor({
         <h2 className="text-sm font-medium">
           {kind === "locations" ? "Views" : "References"}
         </h2>
+        <input
+          ref={file}
+          type="file"
+          accept={UPLOAD_TYPES.join(",")}
+          className="hidden"
+          onChange={(e) => {
+            const chosen = e.target.files?.[0]
+            e.target.value = ""
+            if (chosen && uploadSlot) {
+              sketch(uploadSlot, chosen)
+            }
+          }}
+        />
         {entry ? (
           <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {images.map((image) => (
               <li key={image.label} className="space-y-1">
                 {kind === "locations" &&
-                image.facing !== "north" &&
-                !views[image.facing as keyof Views]?.trim() ? (
+                !image.sketched &&
+                image.slot !== "north" &&
+                !views[image.slot as keyof Views]?.trim() ? (
                   <div className="flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-2 text-center text-xs text-muted-foreground">
                     <ImageOffIcon className="size-5" />
                     Shows the north view -- say what&apos;s on this side to draw
@@ -143,6 +195,48 @@ export function EntryEditor({
                   {image.label}
                   {image.sketched && <Badge variant="outline">Sketch</Badge>}
                 </p>
+                <div className="flex flex-wrap gap-1" hidden={readOnly}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    title={
+                      image.sketched
+                        ? "Open its sketch in the drawing pad"
+                        : "Draw it yourself in the drawing pad"
+                    }
+                    onClick={() => sketch(image.slot)}
+                  >
+                    <PencilIcon />
+                    Sketch
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    title="Start a sketch from a picture of your own"
+                    onClick={() => {
+                      setUploadSlot(image.slot)
+                      file.current?.click()
+                    }}
+                  >
+                    <UploadIcon />
+                    Upload
+                  </Button>
+                  {image.sketched && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      title="Go back to a generated picture, drawn when a shot next needs it (the sketch is kept)"
+                      disabled={stopUsingSketch.isPending}
+                      onClick={() => void backToGenerated(image.slot)}
+                    >
+                      <SparklesIcon />
+                      Use generated
+                    </Button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -155,109 +249,116 @@ export function EntryEditor({
           {kind === "locations"
             ? "Each view is the location seen facing one compass direction, drawn from what's on that side the first time a shot needs it."
             : `Each reference is the ${one} seen from one side, drawn the first time a shot needs it.`}{" "}
-          Sketching or generating them arrives in a later update.
+          Sketch one to draw it yourself instead -- every shot drawn from it
+          then follows your sketch.
         </p>
       </section>
 
       <form className="space-y-4" onSubmit={submit}>
-        <div className="space-y-2">
-          <Label htmlFor="entry-name">Name</Label>
-          <Input
-            id="entry-name"
-            autoFocus={!entry}
-            required
-            maxLength={MAX_NAME}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="entry-description">Description</Label>
-          <Textarea
-            id="entry-description"
-            rows={5}
-            maxLength={MAX_DESCRIPTION}
-            placeholder={
-              kind === "characters"
-                ? "What they look like -- this is what their pictures are drawn from"
-                : kind === "locations"
-                  ? "What the whole place has in common -- what it's built of, its size and feel. What's on each side goes below."
-                  : "What it looks like -- this is what its pictures are drawn from"
-            }
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <p className="text-right text-xs text-muted-foreground">
-            {description.length}/{MAX_DESCRIPTION}
-          </p>
-        </div>
-        {kind === "locations" && (
-          <>
-            <div className="space-y-2">
-              <Label htmlFor="entry-setting">Setting</Label>
-              <EnumSelect
-                id="entry-setting"
-                value={setting}
-                labels={SETTING_LABELS}
-                onChange={setSetting}
-              />
-              {setting === "interior" && (
-                <p className="text-xs text-muted-foreground">
-                  Indoors, a scene&apos;s weather only changes the light -- rain
-                  and snow are never drawn inside.
-                </p>
-              )}
-            </div>
-            <fieldset className="space-y-3">
-              <legend className="text-sm font-medium">
-                What&apos;s on each side
-              </legend>
-              {FACINGS.map((facing) => (
-                <div key={facing} className="space-y-1">
-                  <Label
-                    htmlFor={`entry-view-${facing}`}
-                    className="text-xs text-muted-foreground"
-                  >
-                    {FACING_LABELS[facing]}
-                  </Label>
-                  <Input
-                    id={`entry-view-${facing}`}
-                    maxLength={MAX_VIEW}
-                    placeholder={
-                      facing === "north"
-                        ? "eg:- the back wall: a two-pane window behind a desk"
-                        : "Empty shows the north view"
-                    }
-                    value={views[facing] ?? ""}
-                    onChange={(e) =>
-                      setViews((current) => ({
-                        ...current,
-                        [facing]: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              ))}
-            </fieldset>
-          </>
-        )}
-        {kind === "characters" && (
+        <fieldset disabled={readOnly} className="min-w-0 space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="entry-aliases">Also known as</Label>
+            <Label htmlFor="entry-name">Name</Label>
             <Input
-              id="entry-aliases"
-              placeholder="Other names, separated by commas"
-              value={aliases}
-              onChange={(e) => setAliases(e.target.value)}
+              id="entry-name"
+              autoFocus={!entry}
+              required
+              maxLength={MAX_NAME}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
             />
           </div>
-        )}
+          <div className="space-y-2">
+            <Label htmlFor="entry-description">Description</Label>
+            <Textarea
+              id="entry-description"
+              rows={5}
+              maxLength={MAX_DESCRIPTION}
+              placeholder={
+                kind === "characters"
+                  ? "What they look like -- this is what their pictures are drawn from"
+                  : kind === "locations"
+                    ? "What the whole place has in common -- what it's built of, its size and feel. What's on each side goes below."
+                    : "What it looks like -- this is what its pictures are drawn from"
+              }
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+            <p className="text-right text-xs text-muted-foreground">
+              {description.length}/{MAX_DESCRIPTION}
+            </p>
+          </div>
+          {kind === "locations" && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="entry-setting">Setting</Label>
+                <EnumSelect
+                  id="entry-setting"
+                  value={setting}
+                  labels={SETTING_LABELS}
+                  onChange={setSetting}
+                />
+                {setting === "interior" && (
+                  <p className="text-xs text-muted-foreground">
+                    Indoors, a scene&apos;s weather only changes the light --
+                    rain and snow are never drawn inside.
+                  </p>
+                )}
+              </div>
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium">
+                  What&apos;s on each side
+                </legend>
+                {FACINGS.map((facing) => (
+                  <div key={facing} className="space-y-1">
+                    <Label
+                      htmlFor={`entry-view-${facing}`}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {FACING_LABELS[facing]}
+                    </Label>
+                    <Input
+                      id={`entry-view-${facing}`}
+                      maxLength={MAX_VIEW}
+                      placeholder={
+                        facing === "north"
+                          ? "eg:- the back wall: a two-pane window behind a desk"
+                          : "Empty shows the north view"
+                      }
+                      value={views[facing] ?? ""}
+                      onChange={(e) =>
+                        setViews((current) => ({
+                          ...current,
+                          [facing]: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                ))}
+              </fieldset>
+            </>
+          )}
+          {kind === "characters" && (
+            <div className="space-y-2">
+              <Label htmlFor="entry-aliases">Also known as</Label>
+              <Input
+                id="entry-aliases"
+                placeholder="Other names, separated by commas"
+                value={aliases}
+                onChange={(e) => setAliases(e.target.value)}
+              />
+            </div>
+          )}
+        </fieldset>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {saved && !error && (
           <p className="text-sm text-muted-foreground">Saved.</p>
         )}
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={saveEntry.isPending || !name.trim()}>
+          <Button
+            type="submit"
+            hidden={readOnly}
+            disabled={saveEntry.isPending || !name.trim()}
+          >
             {saveEntry.isPending
               ? "Saving..."
               : entry
@@ -267,7 +368,7 @@ export function EntryEditor({
           <Button type="button" variant="outline" onClick={onBack}>
             Back to all
           </Button>
-          {entry && (
+          {entry && !readOnly && (
             <Button
               type="button"
               variant="destructive"

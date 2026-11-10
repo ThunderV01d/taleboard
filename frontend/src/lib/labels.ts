@@ -60,6 +60,7 @@ export const LAYER_TYPE_LABELS: Record<
   prop: "Prop",
   text: "Text",
   image: "Image",
+  freehand: "Drawing",
   group: "Group",
 }
 

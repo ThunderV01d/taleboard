@@ -1,5 +1,12 @@
 import Konva from "konva"
-import { useEffect, useMemo, useRef, useState } from "react"
+import {
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react"
 import {
   Circle,
   Group,
@@ -13,7 +20,15 @@ import {
 } from "react-konva"
 import useImage from "use-image"
 
-import type { Tool } from "@/components/canvas/tool-strip"
+import type { Pen, Tool } from "@/components/canvas/tool-strip"
+import {
+  finishStroke,
+  strokeBounds,
+  warpStrokes,
+  type Bounds,
+  type FreehandLayer,
+  type Stroke,
+} from "@/lib/freehand"
 import { FONT_FAMILIES } from "@/lib/labels"
 import {
   apply,
@@ -22,11 +37,14 @@ import {
   frameMatrixOf,
   fromKonva,
   invert,
+  SHOT_FRAME,
   toKonva,
   topLevelOf,
+  type Frame,
   type Layer,
   type Transform,
 } from "@/lib/layers"
+import { clampPan, zoomAt, type View } from "@/lib/zoom"
 import {
   CORNER_NAMES,
   drawWarped,
@@ -95,32 +113,71 @@ function checkerboard(): HTMLCanvasElement {
 /** A layer's ID, and its transform after a move or resize on the canvas */
 export type TransformChange = { id: string; transform: Transform }
 
-/** A picture's corners while one is being dragged in Distort -- drawn, but not an edit until the drag ends */
+/** What the canvas can do when asked from outside */
+export type CanvasHandle = {
+  /** What the frame shows, as a PNG the frame's size -- on white paper, without the selection or the checkerboard */
+  flatten: () => Promise<Blob>
+}
+
+/** A picture's (or drawing's) corners while one is being dragged in Distort -- drawn, but not an edit until the drag ends */
 type Preview = { id: string; corners: Corners } | null
 
+/** A stroke being drawn: the drawing it goes into (null for a new one), its path in that drawing's space and in the frame's */
+type Drawing = {
+  target: string | null
+  local: number[]
+  frame: number[]
+} | null
+
+/** A layer Distort can warp: a picture (its corners), or a drawing (its strokes' points) */
+type Warpable = PictureLayer | FreehandLayer
+
 /**
- * The shot's frame, drawn with Konva: every layer in its place, groups nested, bottom to top.
+ * A shot's (or sketch's) frame, drawn with Konva: every layer in its place, groups nested, bottom to top.
  *
  * Click a layer to select it (a layer inside a group selects the whole group -- pick it from the layers panel to
  * select just it); shift-click adds to the selection. Selected layers get handles to move, resize and rotate them.
  * Konva does the dragging; the result is reported once, when the drag or resize ends, so each is one undo step.
  *
- * With the Distort tool, selected pictures get a handle on each corner instead, to warp their perspective. A click
- * then picks the picture itself, even inside a group (groups can't be distorted), and nothing moves when dragged.
+ * With the Distort tool, selected pictures and drawings get a handle on each corner instead, to warp their perspective
+ * (a drawing's strokes are warped point by point). A click then picks the layer itself, even inside a group (groups
+ * can't be distorted), and nothing moves when dragged.
+ *
+ * With the brush, a drag draws a stroke into the selected drawing -- or, if no drawing is selected, a new one; with
+ * the eraser, into the selected drawing only, rubbing out its own strokes. Each stroke is reported once it's finished,
+ * so it's one undo step.
+ *
+ * The view zooms and pans (see lib/zoom.ts): Ctrl and the wheel zoom about the pointer, the wheel on its own pans, and
+ * so does dragging with Space held (or the middle button). The canvas stays the size of its space throughout.
  */
 export function ShotCanvas({
+  ref,
+  frame = SHOT_FRAME,
   layers,
   selection,
   tool,
+  pen,
   imageUrl,
   placeholderLabel,
   onSelect,
   onTransform,
   onWarp,
+  onWarpStrokes,
+  onStroke,
+  view,
+  onView,
+  onFitScale,
+  scaleLocked = false,
+  readOnly = false,
 }: {
+  ref?: Ref<CanvasHandle>
+  /** The frame's size (default: a shot's) */
+  frame?: Frame
   layers: Layer[]
   selection: string[]
   tool: Tool
+  /** What the brush and eraser draw with */
+  pen: Pen
   /** The URL to draw a layer's image from, if it has one */
   imageUrl: (layer: Layer) => string | null
   /** What a not-yet-drawn layer's placeholder says */
@@ -129,28 +186,77 @@ export function ShotCanvas({
   onTransform: (changes: TransformChange[]) => void
   /** A picture's new corners, once a corner has been dragged */
   onWarp: (id: string, corners: Corners) => void
+  /** A drawing's strokes, warped, once a corner has been dragged */
+  onWarpStrokes: (id: string, strokes: Stroke[]) => void
+  /** A finished stroke, for the drawing it goes into (null: a new drawing, centred on the frame) */
+  onStroke: (target: string | null, stroke: Stroke) => void
+  /** How far it's zoomed and panned */
+  view: View
+  onView: (view: View) => void
+  /** The scale (screen pixels per frame pixel) that fits the frame in its space -- reported whenever it changes */
+  onFitScale?: (scale: number) => void
+  /** Whether layers are resized keeping their shape (corner handles only) */
+  scaleLocked?: boolean
+  /** Selecting only -- nothing moves, and the selection has no handles (a project shared to view) */
+  readOnly?: boolean
 }) {
   const box = useRef<HTMLDivElement>(null)
   const stage = useRef<Konva.Stage>(null)
   const transformer = useRef<Konva.Transformer>(null)
-  const [size, setSize] = useState(600)
+  const content = useRef<Konva.Layer>(null)
+  const checker = useRef<Konva.Rect>(null)
+  const [space, setSpace] = useState({ width: 600, height: 600 })
   const [preview, setPreview] = useState<Preview>(null)
+  const [drawing, setDrawing] = useState<Drawing>(null)
+  // Space held (to pan by dragging), and a pan drag under way: where it started, and the view then
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  const [panning, setPanning] = useState<{
+    x: number
+    y: number
+    view: View
+  } | null>(null)
 
-  // The frame is the largest square that fits the space it's given, whichever way that space is narrower
+  useEffect(() => {
+    const typing = (event: KeyboardEvent) =>
+      (event.target as HTMLElement).closest(
+        "input, textarea, select, [contenteditable=true], [role=dialog], [role=menu], [role=listbox], [role=checkbox]"
+      )
+    const down = (event: KeyboardEvent) => {
+      if (event.code === "Space" && !typing(event)) {
+        event.preventDefault() // Not a page scroll, nor a click on a focused button
+        setSpaceHeld(true)
+      }
+    }
+    const up = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        setSpaceHeld(false)
+      }
+    }
+    const blur = () => setSpaceHeld(false)
+    window.addEventListener("keydown", down)
+    window.addEventListener("keyup", up)
+    window.addEventListener("blur", blur)
+    return () => {
+      window.removeEventListener("keydown", down)
+      window.removeEventListener("keyup", up)
+      window.removeEventListener("blur", blur)
+    }
+  }, [])
+
+  // The canvas fills the space it's given; the frame is fitted to it (keeping its shape), then zoomed and panned
   useEffect(() => {
     const element = box.current
     if (!element) {
       return
     }
     const observer = new ResizeObserver(([entry]) =>
-      setSize(
-        Math.max(
+      setSpace({
+        width: Math.max(120 + 2 * MARGIN, Math.floor(entry.contentRect.width)),
+        height: Math.max(
           120 + 2 * MARGIN,
-          Math.floor(
-            Math.min(entry.contentRect.width, entry.contentRect.height)
-          )
-        )
-      )
+          Math.floor(entry.contentRect.height)
+        ),
+      })
     )
     observer.observe(element)
     return () => observer.disconnect()
@@ -239,53 +345,290 @@ export function ShotCanvas({
       }))
     )
 
-  // Frame pixels to screen pixels, leaving the margin all round
-  const scale = (size - 2 * MARGIN) / FRAME_SIZE
+  // Frame pixels to screen pixels: fitted to the space (leaving the margin all round), then zoomed
+  const fit = Math.min(
+    (space.width - 2 * MARGIN) / frame.width,
+    (space.height - 2 * MARGIN) / frame.height
+  )
+  const scale = fit * view.zoom
+  // Where the frame's top-left corner is on the canvas: centred, then panned
+  const origin = {
+    x: (space.width - frame.width * scale) / 2 + view.x,
+    y: (space.height - frame.height * scale) / 2 + view.y,
+  }
+  useEffect(() => onFitScale?.(fit), [fit, onFitScale])
 
-  // The pictures that get corner handles: selected ones, while distorting
+  /** A new view, with the frame kept within reach */
+  const moveTo = (next: View) =>
+    onView(
+      clampPan(
+        next,
+        {
+          width: frame.width * fit * next.zoom,
+          height: frame.height * fit * next.zoom,
+        },
+        space
+      )
+    )
+
+  /** The pointer, in screen pixels from the middle of the canvas -- what zoomAt zooms about */
+  const fromMiddle = () => {
+    const at = stage.current?.getPointerPosition()
+    return at
+      ? { x: at.x - space.width / 2, y: at.y - space.height / 2 }
+      : undefined
+  }
+
+  const wheel = (event: Konva.KonvaEventObject<WheelEvent>) => {
+    event.evt.preventDefault()
+    if (event.evt.ctrlKey || event.evt.metaKey) {
+      // Ctrl and the wheel (or a trackpad pinch, which arrives as one) zoom about the pointer
+      moveTo(
+        zoomAt(
+          view,
+          view.zoom * Math.exp(-event.evt.deltaY * 0.002),
+          fromMiddle()
+        )
+      )
+    } else {
+      moveTo({
+        ...view,
+        x: view.x - event.evt.deltaX,
+        y: view.y - event.evt.deltaY,
+      })
+    }
+  }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      flatten: async () => {
+        const layer = content.current
+        if (!layer) {
+          throw new Error("The canvas isn't ready yet.")
+        }
+        // Just the frame, at its own size: the margin left out, and screen pixels scaled back up to frame pixels
+        checker.current?.hide()
+        let pixels: HTMLCanvasElement
+        try {
+          pixels = layer.toCanvas({
+            x: origin.x,
+            y: origin.y,
+            width: frame.width * scale,
+            height: frame.height * scale,
+            pixelRatio: 1 / scale,
+          })
+        } finally {
+          checker.current?.show()
+          layer.batchDraw()
+        }
+        // On white, as if drawn on paper -- an empty part of the frame then reads as background, not black
+        const paper = document.createElement("canvas")
+        paper.width = frame.width
+        paper.height = frame.height
+        const context = paper.getContext("2d")!
+        context.fillStyle = "#ffffff"
+        context.fillRect(0, 0, frame.width, frame.height)
+        context.drawImage(pixels, 0, 0, frame.width, frame.height)
+        return new Promise<Blob>((resolve, reject) =>
+          paper.toBlob(
+            (blob) =>
+              blob
+                ? resolve(blob)
+                : reject(new Error("The drawing couldn't be saved as a PNG.")),
+            "image/png"
+          )
+        )
+      },
+    }),
+    [frame, scale, origin.x, origin.y]
+  )
+
+  // The pictures and drawings that get corner handles: selected ones, while distorting (a drawing with nothing in it has no corners)
   const warping =
     tool === "distort"
       ? selection
           .map((id) => findLayer(layers, id)?.layer)
           .filter(
-            (layer): layer is PictureLayer =>
-              layer !== undefined && isPicture(layer)
+            (layer): layer is Warpable =>
+              layer !== undefined &&
+              (isPicture(layer) ||
+                (layer.type === "freehand" &&
+                  strokeBounds(layer.strokes) !== null))
           )
       : []
 
   const commitWarp = () => {
-    if (preview) {
+    const layer = preview && findLayer(layers, preview.id)?.layer
+    if (preview && layer?.type === "freehand") {
+      const bounds = strokeBounds(layer.strokes)
+      if (bounds) {
+        onWarpStrokes(
+          layer.id,
+          warpStrokes(layer.strokes, bounds, preview.corners)
+        )
+      }
+    } else if (preview) {
       onWarp(preview.id, preview.corners)
     }
     setPreview(null)
   }
 
+  // The drawing the brush or eraser works in: the selected one, if a drawing is selected (the brush starts a new one
+  // otherwise; the eraser has nothing to rub out)
+  const selectedDrawing =
+    selection.length === 1
+      ? (() => {
+          const layer = findLayer(layers, selection[0])?.layer
+          return layer?.type === "freehand" ? layer : null
+        })()
+      : null
+  const drawingTool = tool === "brush" || tool === "eraser"
+
+  /** Where the pointer is, in the frame and in the target drawing's own space (centred on the frame, for a new one) */
+  const pointer = (target: FreehandLayer | null) => {
+    const at = stage.current?.getRelativePointerPosition()
+    if (!at) {
+      return null
+    }
+    const local = target
+      ? apply(invert(frameMatrixOf(layers, target)), at)
+      : { x: at.x - frame.width / 2, y: at.y - frame.height / 2 }
+    return { frame: at, local }
+  }
+
+  const startStroke = () => {
+    if (tool === "eraser" && !selectedDrawing) {
+      return // Nothing to rub out
+    }
+    const at = pointer(selectedDrawing)
+    if (at) {
+      setDrawing({
+        target: selectedDrawing?.id ?? null,
+        local: [at.local.x, at.local.y],
+        frame: [at.frame.x, at.frame.y],
+      })
+    }
+  }
+
+  const extendStroke = () => {
+    if (!drawing) {
+      return
+    }
+    const at = pointer(selectedDrawing)
+    if (at) {
+      setDrawing({
+        ...drawing,
+        local: [...drawing.local, at.local.x, at.local.y],
+        frame: [...drawing.frame, at.frame.x, at.frame.y],
+      })
+    }
+  }
+
+  // A stroke's width is kept in its drawing's own pixels, so the pen draws the same width on screen however the drawing is scaled
+  const drawingScale = (target: FreehandLayer | null) => {
+    if (!target) {
+      return 1
+    }
+    const [a, b, c, d] = frameMatrixOf(layers, target)
+    return Math.sqrt(Math.abs(a * d - b * c)) || 1
+  }
+
+  const endStroke = () => {
+    if (!drawing) {
+      return
+    }
+    const points = finishStroke(drawing.local)
+    if (points.length > 0) {
+      onStroke(drawing.target, {
+        points,
+        colour: pen.colour,
+        width:
+          Math.round((pen.width / drawingScale(selectedDrawing)) * 10) / 10,
+        erase: tool === "eraser",
+      })
+    }
+    setDrawing(null)
+  }
+
+  const startPan = (event: Konva.KonvaEventObject<MouseEvent>) => {
+    setPanning({ x: event.evt.clientX, y: event.evt.clientY, view })
+  }
+
+  const mouseDown = (event: Konva.KonvaEventObject<MouseEvent>) => {
+    if (spaceHeld || event.evt.button === 1) {
+      event.evt.preventDefault() // The middle button would otherwise start the browser's own scrolling
+      startPan(event)
+    } else if (drawingTool) {
+      startStroke()
+    } else {
+      pick(event)
+    }
+  }
+
+  const mouseMove = (event: Konva.KonvaEventObject<MouseEvent>) => {
+    if (panning) {
+      moveTo({
+        ...panning.view,
+        x: panning.view.x + event.evt.clientX - panning.x,
+        y: panning.view.y + event.evt.clientY - panning.y,
+      })
+    } else {
+      extendStroke()
+    }
+  }
+
+  const mouseUp = () => {
+    if (panning) {
+      setPanning(null)
+    } else {
+      endStroke()
+    }
+  }
+
   return (
-    <div
-      ref={box}
-      className="flex size-full min-h-0 items-center justify-center"
-    >
+    <div ref={box} className="relative size-full min-h-0 overflow-hidden">
       <Stage
         ref={stage}
-        width={size}
-        height={size}
-        x={MARGIN}
-        y={MARGIN}
+        width={space.width}
+        height={space.height}
+        x={origin.x}
+        y={origin.y}
         scaleX={scale}
         scaleY={scale}
-        onMouseDown={pick}
-        onTouchStart={pick}
+        // Placed over the space rather than in it, so the canvas never changes the size it's measured from
+        style={{
+          position: "absolute",
+          inset: 0,
+          cursor: panning
+            ? "grabbing"
+            : spaceHeld
+              ? "grab"
+              : drawingTool
+                ? "crosshair"
+                : undefined,
+        }}
+        onMouseDown={mouseDown}
+        onTouchStart={drawingTool ? startStroke : pick}
+        onMouseMove={mouseMove}
+        onTouchMove={extendStroke}
+        onMouseUp={mouseUp}
+        onTouchEnd={endStroke}
+        onMouseLeave={mouseUp}
+        onWheel={wheel}
       >
         {/* The layers, cut off at the frame's edge -- what the shot will show */}
         <KonvaLayer
+          ref={content}
           clipX={0}
           clipY={0}
-          clipWidth={FRAME_SIZE}
-          clipHeight={FRAME_SIZE}
+          clipWidth={frame.width}
+          clipHeight={frame.height}
         >
           <Rect
-            width={FRAME_SIZE}
-            height={FRAME_SIZE}
+            ref={checker}
+            width={frame.width}
+            height={frame.height}
             fillPatternImage={checkerboard() as unknown as HTMLImageElement}
             listening={false}
           />
@@ -299,6 +642,7 @@ export function ShotCanvas({
               preview={preview}
               imageUrl={imageUrl}
               placeholderLabel={placeholderLabel}
+              movable={!spaceHeld && !readOnly}
               onDragEnd={(node) => report([node])}
             />
           ))}
@@ -306,8 +650,8 @@ export function ShotCanvas({
         {/* Handles, over everything and free to reach into the margin */}
         <KonvaLayer>
           <Rect
-            width={FRAME_SIZE}
-            height={FRAME_SIZE}
+            width={frame.width}
+            height={frame.height}
             stroke="rgba(128, 128, 128, 0.5)"
             strokeWidth={1}
             strokeScaleEnabled={false}
@@ -316,6 +660,16 @@ export function ShotCanvas({
           <Transformer
             ref={transformer}
             rotationSnaps={[0, 90, 180, 270]}
+            // Locked: only the corners, which keep a layer's shape as it's resized
+            keepRatio
+            enabledAnchors={
+              readOnly
+                ? []
+                : scaleLocked
+                  ? ["top-left", "top-right", "bottom-left", "bottom-right"]
+                  : undefined
+            }
+            rotateEnabled={!readOnly}
             ignoreStroke
             onTransformEnd={() => report(transformer.current?.nodes() ?? [])}
           />
@@ -325,15 +679,31 @@ export function ShotCanvas({
               layers={layers}
               layer={layer}
               corners={
-                (preview?.id === layer.id ? preview.corners : layer.corners) ??
-                UNWARPED
+                (preview?.id === layer.id
+                  ? preview.corners
+                  : layer.type === "freehand"
+                    ? null
+                    : layer.corners) ?? UNWARPED
               }
-              url={imageUrl(layer)}
+              url={layer.type === "freehand" ? null : imageUrl(layer)}
               radius={6 / scale}
               onPreview={(corners) => setPreview({ id: layer.id, corners })}
               onCommit={commitWarp}
             />
           ))}
+          {/* The stroke being drawn, until it's finished and kept */}
+          {drawing && (
+            <Line
+              points={drawing.frame}
+              stroke={
+                tool === "eraser" ? "rgba(128, 128, 128, 0.5)" : pen.colour
+              }
+              strokeWidth={pen.width}
+              lineCap="round"
+              lineJoin="round"
+              listening={false}
+            />
+          )}
         </KonvaLayer>
       </Stage>
     </div>
@@ -352,6 +722,7 @@ function LayerNode({
   preview,
   imageUrl,
   placeholderLabel,
+  movable,
   onDragEnd,
 }: {
   layer: Layer
@@ -361,6 +732,8 @@ function LayerNode({
   preview: Preview
   imageUrl: (layer: Layer) => string | null
   placeholderLabel: (layer: Layer) => string
+  /** False while Space is held -- a drag then pans the view instead */
+  movable: boolean
   onDragEnd: (node: Konva.Node) => void
 }) {
   const selected = selection.includes(layer.id)
@@ -369,6 +742,7 @@ function LayerNode({
   // (so dragging that layer moves just it, not the whole group)
   // Nothing moves while distorting -- a drag near a corner should never shift the layer instead
   const draggable =
+    movable &&
     tool === "select" &&
     (selected ||
       (topLevel &&
@@ -400,11 +774,17 @@ function LayerNode({
             preview={preview}
             imageUrl={imageUrl}
             placeholderLabel={placeholderLabel}
+            movable={movable}
             onDragEnd={onDragEnd}
           />
         ))
       ) : layer.type === "text" ? (
         <TextContent layer={layer} />
+      ) : layer.type === "freehand" ? (
+        <FreehandContent
+          layer={layer}
+          corners={preview?.id === layer.id ? preview.corners : null}
+        />
       ) : (
         <PictureContent
           layer={layer}
@@ -429,8 +809,8 @@ function containsSelected(layers: Layer[], selection: string[]): boolean {
 }
 
 /**
- * The size a picture is drawn at, before its transform: a background fills the frame; anything else is its image's
- * own size -- or, until it has one, its placeholder's.
+ * The size a picture is drawn at, before its transform: a background fills the (shot's) frame; anything else is its
+ * image's own size -- or, until it has one, its placeholder's.
  */
 function pictureSize(
   layer: PictureLayer,
@@ -594,7 +974,7 @@ function CornerHandles({
   onCommit,
 }: {
   layers: Layer[]
-  layer: PictureLayer
+  layer: Warpable
   corners: Corners
   url: string | null
   /** Handle radius, in frame pixels */
@@ -603,12 +983,19 @@ function CornerHandles({
   onCommit: () => void
 }) {
   const { image } = usePicture(url)
-  const [width, height] = pictureSize(layer, image)
+  // The box the corners are fractions of: a picture's own, centred on its middle; a drawing's strokes' bounds
+  const box: Bounds =
+    layer.type === "freehand"
+      ? (strokeBounds(layer.strokes) ?? { x: 0, y: 0, width: 1, height: 1 })
+      : (() => {
+          const [width, height] = pictureSize(layer, image)
+          return { x: -width / 2, y: -height / 2, width, height }
+        })()
   const matrix = frameMatrixOf(layers, layer)
   const at = (name: CornerName) =>
     apply(matrix, {
-      x: (corners[name].x - 0.5) * width,
-      y: (corners[name].y - 0.5) * height,
+      x: box.x + corners[name].x * box.width,
+      y: box.y + corners[name].y * box.height,
     })
   const points = CORNER_NAMES.map(at)
 
@@ -616,7 +1003,10 @@ function CornerHandles({
     const local = apply(invert(matrix), node.position())
     const next = {
       ...corners,
-      [name]: { x: local.x / width + 0.5, y: local.y / height + 0.5 },
+      [name]: {
+        x: (local.x - box.x) / box.width,
+        y: (local.y - box.y) / box.height,
+      },
     }
     if (isConvex(next, MIN_CORNER_ANGLE)) {
       onPreview(next)
@@ -667,6 +1057,67 @@ function CornerHandles({
         />
       ))}
     </>
+  )
+}
+
+/**
+ * A drawing: its strokes, in order, in its own space. A drawing with erasing strokes is drawn to its own canvas first
+ * (Konva's cache), so they rub out its earlier strokes and nothing beneath it. While a corner is dragged in Distort,
+ * the strokes are drawn warped.
+ */
+function FreehandContent({
+  layer,
+  corners,
+}: {
+  layer: FreehandLayer
+  corners: Corners | null
+}) {
+  const group = useRef<Konva.Group>(null)
+  const strokes = useMemo(() => {
+    const bounds = corners && strokeBounds(layer.strokes)
+    return bounds ? warpStrokes(layer.strokes, bounds, corners) : layer.strokes
+  }, [layer.strokes, corners])
+  const erasing = strokes.some((stroke) => stroke.erase)
+
+  useEffect(() => {
+    const node = group.current
+    if (!node) {
+      return
+    }
+    if (erasing) {
+      // At least as sharp as the frame's own pixels, so a flattened sketch is as crisp as the drawing
+      const absolute = node.getAbsoluteScale()
+      const inFrame =
+        Math.max(Math.abs(absolute.x), Math.abs(absolute.y)) /
+        (node.getStage()?.scaleX() || 1)
+      node.cache({
+        pixelRatio:
+          Math.max(window.devicePixelRatio || 1, 1) * Math.max(inFrame, 1),
+      })
+    } else {
+      node.clearCache()
+    }
+    node.getLayer()?.batchDraw()
+  }, [strokes, erasing, layer.transform])
+
+  return (
+    <Group ref={group}>
+      {strokes.map((stroke, index) => (
+        <Line
+          key={index}
+          points={stroke.points}
+          stroke={stroke.colour}
+          strokeWidth={stroke.width}
+          lineCap="round"
+          lineJoin="round"
+          globalCompositeOperation={
+            stroke.erase ? "destination-out" : "source-over"
+          }
+          hitStrokeWidth={Math.max(stroke.width, 12)}
+          listening={!stroke.erase}
+        />
+      ))}
+    </Group>
   )
 }
 

@@ -4,28 +4,34 @@ import { Hub } from "aws-amplify/utils"
 import { useEffect, useState, type ReactNode } from "react"
 
 import { AuthContext, type AuthState } from "@/lib/auth-state"
+import { endGuestSession, isGuest, onGuestChange } from "@/lib/guest"
 
 /**
- * Reads the signed-in user from Amplify's saved session.
+ * Reads the signed-in user from Amplify's saved session -- or, with none, whether this browser is browsing as the guest.
  */
 async function readSession(): Promise<AuthState> {
   try {
     const { tokens } = await fetchAuthSession()
-    if (!tokens) {
-      return { status: "signedOut" }
+    if (tokens) {
+      endGuestSession() // A real session never mixes with the guest's
+      const email = tokens.idToken?.payload.email
+      return {
+        status: "signedIn",
+        email: typeof email === "string" ? email : "",
+      }
     }
-    const email = tokens.idToken?.payload.email
-    return { status: "signedIn", email: typeof email === "string" ? email : "" }
   } catch {
-    return { status: "signedOut" }
+    // No saved session
   }
+  return isGuest() ? { status: "guest" } : { status: "signedOut" }
 }
 
 /**
  * Keeps the app's sign-in state in step with Amplify: checks for a saved session on load, then follows Amplify's
- * sign-in and sign-out events (from any page, or a Google redirect).
+ * sign-in and sign-out events (from any page, or a Google redirect) -- and a guest session starting or ending.
  *
- * Signing out also empties the query cache, so the next person on this browser never sees the last one's projects.
+ * Signing in, signing out, and starting or leaving a guest session all empty the query cache, so nobody ever sees what
+ * the last session loaded (a guest who signs up never sees the guest's projects as their own, nor the other way round).
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -40,6 +46,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       switch (payload.event) {
         case "signedIn":
         case "signInWithRedirect":
+          endGuestSession()
+          queryClient.clear()
           refresh()
           break
         case "signedOut":
@@ -49,9 +57,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           break
       }
     })
+    const stopFollowingGuest = onGuestChange(() => {
+      queryClient.clear()
+      refresh()
+    })
     return () => {
       current = false
       stopListening()
+      stopFollowingGuest()
     }
   }, [queryClient])
 

@@ -226,7 +226,7 @@ def test_deleting_a_location_can_move_its_scenes_elsewhere(boards, story):
     pid, office = story["pid"], story["office"]
     shot = boards.get_shot(pid, office.id, story["office_0"].id)
     background = shot.layers[0]
-    background.last_generated_params = background.current_params(shot.generation_context(office))
+    background.last_generated_params = background.current_params(shot.generation_context(office), None)
     shot = boards.save_shot(pid, shot)
 
     moved = delete_location(boards, pid, "office", move_scenes_to="quay")
@@ -235,7 +235,7 @@ def test_deleting_a_location_can_move_its_scenes_elsewhere(boards, story):
     assert [scene.location_id for scene in boards.list_scenes(pid)] == ["quay", "quay", "quay"]
     assert len(boards.list_shots(pid, office.id)) == 3
     reloaded = boards.get_shot(pid, office.id, shot.id)
-    assert reloaded.layers[0].needs_regeneration(reloaded.generation_context(boards.get_scene(pid, office.id))) is True
+    assert reloaded.layers[0].needs_regeneration(reloaded.generation_context(boards.get_scene(pid, office.id)), None) is True
     with pytest.raises(KeyError):
         boards.get_entry(pid, Location, "office")
 

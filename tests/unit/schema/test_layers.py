@@ -8,7 +8,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
 from taleboard.schema.layers import (
-    FRAME_SIZE, BackgroundLayer, BackgroundParams, CharacterLayer, CharacterParams, Corners, GeneratedLayer, GenerationContext,
+    FRAME_SIZE, BackgroundLayer, BackgroundParams, CharacterLayer, CharacterParams, Corners, FreehandLayer, GeneratedLayer, GenerationContext,
     GroupLayer, ImageLayer, Layer, Point, PropLayer, TextLayer, Transform,
 )
 
@@ -42,7 +42,7 @@ def _generated(layer: GeneratedLayer, context: GenerationContext) -> GeneratedLa
     Returns:
         GeneratedLayer - The same layer.
     """
-    layer.last_generated_params = layer.current_params(context)
+    layer.last_generated_params = layer.current_params(context, None)
     return layer
 
 
@@ -150,7 +150,7 @@ def test_a_layer_with_an_unknown_type_is_rejected():
     Verifies that the discriminated union refuses a layer whose type isn't one of the six.
     """
     with pytest.raises(ValidationError):
-        LAYER.validate_python({"type": "freehand"})
+        LAYER.validate_python({"type": "camera"})
 
 
 @pytest.mark.parametrize("layer", [BackgroundLayer(), CharacterLayer(character_id="mara"), PropLayer(prop_id="lamp")])
@@ -161,7 +161,7 @@ def test_a_layer_that_was_never_generated_needs_generating(layer):
     Arguments:
         layer: GeneratedLayer - A layer that hasn't been generated.
     """
-    assert layer.needs_regeneration(_context()) is True
+    assert layer.needs_regeneration(_context(), None) is True
 
 
 @pytest.mark.parametrize("layer, change, undo", [
@@ -181,13 +181,13 @@ def test_regeneration_is_needed_after_a_change_and_not_after_undoing_it(layer, c
     """
     context = _context()
     _generated(layer, context)
-    assert layer.needs_regeneration(context) is False
+    assert layer.needs_regeneration(context, None) is False
 
     setattr(layer, *change)
-    assert layer.needs_regeneration(context) is True
+    assert layer.needs_regeneration(context, None) is True
 
     setattr(layer, *undo)
-    assert layer.needs_regeneration(context) is False
+    assert layer.needs_regeneration(context, None) is False
 
 
 @pytest.mark.parametrize("layer", [BackgroundLayer(), CharacterLayer(character_id="mara"), PropLayer(prop_id="lamp")])
@@ -205,7 +205,7 @@ def test_moving_or_restyling_a_layer_never_needs_regeneration(layer):
     layer.opacity, layer.visible, layer.name = 0.3, False, "renamed"
     layer.corners = Corners(top_left=Point(x=0.1, y=-0.2))
 
-    assert layer.needs_regeneration(context) is False
+    assert layer.needs_regeneration(context, None) is False
 
 
 @pytest.mark.parametrize("field, value", [
@@ -222,7 +222,7 @@ def test_a_background_needs_regeneration_when_its_shot_or_scene_changes(field, v
     """
     background = _generated(BackgroundLayer(), _context())
 
-    assert background.needs_regeneration(_context(**{field: value})) is True
+    assert background.needs_regeneration(_context(**{field: value}), None) is True
 
 
 def test_characters_and_props_ignore_the_shot_and_scene():
@@ -233,8 +233,8 @@ def test_characters_and_props_ignore_the_shot_and_scene():
     prop = _generated(PropLayer(prop_id="lamp"), _context())
     changed = _context(shot_size=ShotSize.WIDE, time_of_day=TimeOfDay.NIGHT)
 
-    assert character.needs_regeneration(changed) is False
-    assert prop.needs_regeneration(changed) is False
+    assert character.needs_regeneration(changed, None) is False
+    assert prop.needs_regeneration(changed, None) is False
 
 
 def test_current_params_hold_exactly_what_each_image_depends_on():
@@ -243,8 +243,8 @@ def test_current_params_hold_exactly_what_each_image_depends_on():
     """
     context = _context(details="door open")
 
-    assert BackgroundLayer(facing=Facing.SOUTH).current_params(context) == BackgroundParams(facing=Facing.SOUTH, **context.model_dump())
-    assert CharacterLayer(character_id="mara", action="waving").current_params(context) == CharacterParams(orientation=Orientation.TOWARDS_CAMERA, action="waving")
+    assert BackgroundLayer(facing=Facing.SOUTH).current_params(context, None) == BackgroundParams(facing=Facing.SOUTH, **context.model_dump())
+    assert CharacterLayer(character_id="mara", action="waving").current_params(context, None) == CharacterParams(orientation=Orientation.TOWARDS_CAMERA, action="waving")
 
 
 def test_a_generated_layer_type_that_forgets_its_params_fails_loudly():
@@ -252,7 +252,7 @@ def test_a_generated_layer_type_that_forgets_its_params_fails_loudly():
     Verifies that the base generated layer refuses to report params -- a new generated type must say what its image depends on.
     """
     with pytest.raises(NotImplementedError):
-        GeneratedLayer().current_params(_context())
+        GeneratedLayer().current_params(_context(), None)
 
 
 def test_a_picture_starts_unwarped_and_its_default_corners_are_its_own():
@@ -300,3 +300,46 @@ def test_corners_round_trip_on_picture_layers():
     loaded = LAYER.validate_python(LAYER.dump_python(layer, mode="json"))
 
     assert loaded == layer
+
+
+def test_a_freehand_layer_keeps_its_strokes_in_order():
+    """
+    Verifies that a freehand layer holds its strokes (drawing and erasing) in the order they were drawn, with their pen settings.
+    """
+    layer = LAYER.validate_python({"type": "freehand", "strokes": [
+        {"points": [0, 0, 5, 5], "colour": "#ff0000", "width": 2},
+        {"points": [1, 1, 4, 4], "width": 10, "erase": True},
+    ]})
+
+    assert isinstance(layer, FreehandLayer)
+    assert [(s.colour, s.width, s.erase) for s in layer.strokes] == [("#ff0000", 2, False), ("#000000", 10, True)]
+
+
+@pytest.mark.parametrize("stroke", [
+    {"points": [0, 0, 5]},  # Not x, y pairs
+    {"points": []},  # No points
+    {"points": [0, 0], "width": 0},
+    {"points": [0, 0], "colour": "red"},
+])
+def test_a_malformed_stroke_is_rejected(stroke):
+    """
+    Verifies a stroke's checks: its points come in x, y pairs (at least one), its width is positive, and its colour is #rrggbb.
+
+    Arguments:
+        stroke: dict - The bad stroke.
+    """
+    with pytest.raises(ValidationError):
+        LAYER.validate_python({"type": "freehand", "strokes": [stroke]})
+
+
+def test_a_shot_can_hold_freehand_layers_within_the_stroke_budget():
+    """
+    Verifies that a shot takes freehand layers (inside groups too), but not more stroke points than fit in its stored item.
+    """
+    from taleboard.schema.storyboard import MAX_STROKE_POINTS, Shot
+
+    small = {"type": "freehand", "strokes": [{"points": [0, 0, 1, 1]}]}
+    assert Shot(scene_id="s1", layers=[{"type": "group", "children": [small]}]).all_layers()[1].type == "freehand"
+    big = {"type": "freehand", "strokes": [{"points": [0.0, 0.0] * (MAX_STROKE_POINTS + 1)}]}
+    with pytest.raises(ValidationError, match="at most"):
+        Shot(scene_id="s1", layers=[big])

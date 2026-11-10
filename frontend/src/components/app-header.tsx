@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
 
 /**
  * The bar across the top of every page: the logo (home, or your projects once signed in), the open project's name in
- * the middle when there is one, and signing in or out.
+ * the middle when there is one, and signing in or out -- or, for a guest, signing up or leaving.
  */
 export function AppHeader() {
   const auth = useAuth()
@@ -24,6 +24,11 @@ export function AppHeader() {
     void signOut()
   }
 
+  // The front page ends the guest session once it's showing -- ended here, the page being left would see a signed-out
+  // visitor first, and send them to sign in
+  const leaveGuest = () => navigate("/", { state: { leaveGuest: true } })
+  const browsing = auth.status === "signedIn" || auth.status === "guest"
+
   return (
     <header className="shrink-0 border-b">
       <div
@@ -32,16 +37,11 @@ export function AppHeader() {
           !projectId && "max-w-6xl"
         )}
       >
-        <Link
-          to={auth.status === "signedIn" ? "/projects" : "/"}
-          className="justify-self-start"
-        >
+        <Link to={browsing ? "/projects" : "/"} className="justify-self-start">
           <Logo className="h-8" />
         </Link>
         <div className="min-w-0">
-          {projectId && auth.status === "signedIn" && (
-            <ProjectTitle projectId={projectId} />
-          )}
+          {projectId && browsing && <ProjectTitle projectId={projectId} />}
         </div>
         <div className="justify-self-end">
           {auth.status === "signedIn" ? (
@@ -51,6 +51,18 @@ export function AppHeader() {
               </span>
               <Button variant="outline" size="sm" onClick={leave}>
                 Sign out
+              </Button>
+            </div>
+          ) : auth.status === "guest" ? (
+            <div className="flex items-center gap-3">
+              <span className="hidden text-sm text-muted-foreground sm:inline">
+                Guest
+              </span>
+              <Button size="sm" asChild>
+                <Link to="/signup">Sign up</Link>
+              </Button>
+              <Button variant="outline" size="sm" onClick={leaveGuest}>
+                Leave
               </Button>
             </div>
           ) : auth.status === "signedOut" ? (

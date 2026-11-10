@@ -39,6 +39,7 @@ export function ScenePicker({
   onNew,
   onEdit,
   onDelete,
+  readOnly = false,
 }: {
   scenes: Scene[]
   locations: Location[]
@@ -48,6 +49,8 @@ export function ScenePicker({
   onNew: () => void
   onEdit: (scene: Scene) => void
   onDelete: (scene: Scene) => void
+  /** Choosing a scene only -- no new scene, reordering, editing or deleting (a project shared to view) */
+  readOnly?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const number = (scene: Scene) => scenes.indexOf(scene) + 1
@@ -84,6 +87,7 @@ export function ScenePicker({
                     key={scene.id}
                     id={scene.id}
                     className="rounded-md bg-popover"
+                    disabled={readOnly}
                   >
                     {(grip) => (
                       <div
@@ -117,20 +121,22 @@ export function ScenePicker({
               </ol>
             </SortableList>
           )}
-          <button
-            className="mt-1 flex w-full items-center gap-2 rounded-md border-t px-2 py-2 text-sm hover:bg-muted"
-            onClick={() => {
-              setOpen(false)
-              onNew()
-            }}
-          >
-            <PlusIcon className="size-4" />
-            New scene
-          </button>
+          {!readOnly && (
+            <button
+              className="mt-1 flex w-full items-center gap-2 rounded-md border-t px-2 py-2 text-sm hover:bg-muted"
+              onClick={() => {
+                setOpen(false)
+                onNew()
+              }}
+            >
+              <PlusIcon className="size-4" />
+              New scene
+            </button>
+          )}
         </PopoverContent>
       </Popover>
 
-      {current && (
+      {current && !readOnly && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="Scene actions">

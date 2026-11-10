@@ -9,12 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, model_validator
 
 from taleboard.api.deps import get_boards, get_generation_queue, get_project, not_found
-from taleboard.generation.planning import Planned, images_at_most, layers_to_draw
+from taleboard.generation.planning import Planned, Registry, images_at_most, layers_to_draw
 from taleboard.jobs.queue import GenerationQueue
 from taleboard.schema.base import Model
 from taleboard.schema.generation import GenerationJob, GenerationTask
 from taleboard.schema.layers import GeneratedLayer
-from taleboard.schema.storyboard import Character, Location, Project, Prop
+from taleboard.schema.storyboard import Project
 from taleboard.storage.storyboard_store import StoryboardStore
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["generation"])
@@ -56,7 +56,7 @@ class GeneratePlan(Model):
     images: int
 
 
-def _plan(body: GenerateIn, project: Project, boards: StoryboardStore) -> list[Planned]:
+def _plan(body: GenerateIn, project: Project, boards: StoryboardStore, registry: Registry) -> list[Planned]:
     """
     The layers a request would draw, in order -- or a 404 for anything it names that doesn't exist, and a 400 for a layer that isn't generated.
     """
@@ -74,7 +74,7 @@ def _plan(body: GenerateIn, project: Project, boards: StoryboardStore) -> list[P
         raise not_found(error) from None
 
     if body.layer_id is None:
-        return layers_to_draw(shots)
+        return layers_to_draw(shots, registry)
     scene, shot = shots[0]
     layer = next((l for l in shot.all_layers() if l.id == body.layer_id), None)
     if layer is None:
@@ -89,15 +89,9 @@ def preview_generation(body: GenerateIn, project: Project = Depends(get_project)
     """
     Says how many layers a Generate request would draw, and at most how many images that would take -- without drawing anything.
     """
-    planned = _plan(body, project, boards)
-    pid = project.project_id
-    images = images_at_most(
-        planned,
-        {entry.id: entry for entry in boards.list_entries(pid, Location)},
-        {entry.id: entry for entry in boards.list_entries(pid, Character)},
-        {entry.id: entry for entry in boards.list_entries(pid, Prop)},
-    )
-    return GeneratePlan(layers=len(planned), images=images)
+    registry = Registry.load(boards, project.project_id)
+    planned = _plan(body, project, boards, registry)
+    return GeneratePlan(layers=len(planned), images=images_at_most(planned, registry))
 
 
 @router.post("/generate", status_code=status.HTTP_202_ACCEPTED, response_model=GenerationJob)
@@ -110,7 +104,7 @@ def generate(
     """
     Asks for the layers a request names to be drawn: saves them as a job's tasks, and queues it behind the project's earlier jobs. A request with nothing to draw is a 400, and no job is made.
     """
-    planned = _plan(body, project, boards)
+    planned = _plan(body, project, boards, Registry.load(boards, project.project_id))
     if not planned:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Nothing to draw -- every layer is up to date")
     job = GenerationJob(

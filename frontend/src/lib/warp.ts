@@ -34,10 +34,15 @@ export const UNWARPED: Corners = {
 }
 
 /** A layer drawn from a picture -- the kinds that can be warped */
-export type PictureLayer = Exclude<Layer, { type: "text" | "group" }>
+export type PictureLayer = Exclude<
+  Layer,
+  { type: "text" | "group" | "freehand" }
+>
 
 export function isPicture(layer: Layer): layer is PictureLayer {
-  return layer.type !== "text" && layer.type !== "group"
+  return (
+    layer.type !== "text" && layer.type !== "group" && layer.type !== "freehand"
+  )
 }
 
 /**

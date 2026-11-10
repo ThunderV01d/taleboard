@@ -7,25 +7,70 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from taleboard.schema.base import Model
 from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, Setting, ShotSize, TimeOfDay
-from taleboard.schema.layers import GenerationContext, GroupLayer, Layer
+from taleboard.schema.layers import FreehandLayer, GeneratedLayer, GenerationContext, GroupLayer, Layer
 
 # One side of a location, in words -- short, as it's drawn alongside the location's description
 View = Annotated[str, Field(max_length=200)]
 
+# Most stroke points (x, y pairs) a shot or sketch can hold: its layers are stored inline in one DynamoDB item, which can't
+# pass 400 KB -- this keeps the strokes under about half of that (the browser simplifies each stroke as it's drawn)
+MAX_STROKE_POINTS = 20_000
+
+# Size (width, height) of a sketch's frame, by registry: a character is drawn standing (as their images are), a prop or
+# a location's side square
+SKETCH_FRAMES = {"characters": (512, 1024), "props": (1024, 1024), "locations": (1024, 1024)}
+
+
+def flatten(layers: list[Layer]) -> list[Layer]:
+    """
+    Every layer in a layer graph, groups' children included, bottom to top.
+
+    Arguments:
+        layers: list[Layer] - The top-level layers.
+
+    Returns:
+        list[Layer] - The layers, flattened.
+    """
+    flat: list[Layer] = []
+    stack = list(reversed(layers))
+    while stack:
+        layer = stack.pop()
+        flat.append(layer)
+        if isinstance(layer, GroupLayer):
+            stack.extend(reversed(layer.children))
+    return flat
+
+
+def _check_layer_graph(layers: list[Layer], what: str) -> None:
+    """
+    Rejects a layer graph in which two layers share an ID, or whose strokes are over MAX_STROKE_POINTS.
+    """
+    flat = flatten(layers)
+    ids = [layer.id for layer in flat]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"Two layers in this {what} have the same id")
+    points = sum(len(stroke.points) // 2 for layer in flat if isinstance(layer, FreehandLayer) for stroke in layer.strokes)
+    if points > MAX_STROKE_POINTS:
+        raise ValueError(f"This {what}'s drawing has {points} points -- at most {MAX_STROKE_POINTS} fit")
+
 class Reference(Model):
     """
-    One reference image of a character or prop, in one orientation. Every pose of them in that orientation is matched to it.
+    One reference image: a character's or prop's in one orientation (every pose of them in that orientation is matched to it), or a location's plate for one facing.
+
+    A generated one is only a record -- the engine finds it again from what it's drawn from, so an edited description draws a new one. A sketch is the user's own, and is used as it is.
 
     Attributes:
         image: str - S3 key of the image.
         source: Literal["generated", "sketch"] - Whether it was generated, or sketched by the user (used as-is).
+        remove_background: bool - For a character's or prop's sketch, whether its (paper) background is cut away before it's used. Ignored for plates, and for generated references (always cut out). Defaults to True.
     """
     image: str
     source: Literal["generated", "sketch"]
+    remove_background: bool = True
 
 class Character(Model):
     """
@@ -71,14 +116,22 @@ class Location(Model):
         description: str - What the whole empty place has in common, in words. Defaults to "".
         setting: Setting - Whether the place is indoors or out. Defaults to INT.
         views: dict[Facing,str] - What's on each side of the place (eg:- north: "the back wall: a two-pane window behind a desk"). Defaults to {}.
-        plates: dict[Facing,str] - S3 key of the plate for each facing needed so far -- added the first time a shot needs one. Defaults to {}.
+        plates: dict[Facing,Reference] - The plate for each facing needed so far -- added the first time a shot needs one, or sketched. Defaults to {}.
     """
     id: str
     name: str
     description: str = Field(default="", max_length=300)
     setting: Setting = Setting.INT
     views: dict[Facing, View] = Field(default_factory=dict)
-    plates: dict[Facing, str] = Field(default_factory=dict)
+    plates: dict[Facing, Reference] = Field(default_factory=dict)
+
+    @field_validator("plates",mode="before")
+    @classmethod
+    def plates_from_keys(cls,plates:dict) -> dict:
+        """
+        Reads a plate stored as a bare S3 key (as they were before plates could be sketched) as a generated one.
+        """
+        return {facing: {"image":plate,"source":"generated"} if isinstance(plate, str) else plate for facing,plate in (plates or {}).items()}
 
 
 class Scene(Model):
@@ -136,14 +189,7 @@ class Shot(Model):
         Returns:
             list[Layer] - The layers, flattened.
         """
-        flat: list[Layer] = []
-        stack = list(reversed(self.layers))
-        while stack:
-            layer = stack.pop()
-            flat.append(layer)
-            if isinstance(layer, GroupLayer):
-                stack.extend(reversed(layer.children))
-        return flat
+        return flatten(self.layers)
 
     def generation_context(self, scene: "Scene") -> GenerationContext:
         """
@@ -158,13 +204,44 @@ class Shot(Model):
         return GenerationContext(location_id=scene.location_id, shot_size=self.shot_size, angle=self.angle, details=self.details, time_of_day=scene.time_of_day, atmosphere=scene.atmosphere)
 
     @model_validator(mode="after")
-    def layer_ids_are_unique(self) -> "Shot":
+    def layer_graph_is_valid(self) -> "Shot":
         """
-        Rejects a shot in which two layers (anywhere in the tree) share an ID -- regenerating or editing a layer finds it by ID.
+        Rejects a shot in which two layers (anywhere in the tree) share an ID -- regenerating or editing a layer finds it by ID -- or whose freehand drawing is too big to store.
         """
-        ids = [layer.id for layer in self.all_layers()]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Two layers in this shot have the same id")
+        _check_layer_graph(self.layers, "shot")
+        return self
+
+class Sketch(Model):
+    """
+    A drawing the user makes in place of one of an entry's images -- a character's or prop's reference in one orientation, or a location's plate for one facing. One per slot.
+
+    It's a layer graph like a shot's (freehand, uploaded images, text and groups -- never generated layers), on a frame the shape of the image it stands in for. It's flattened in the browser into the image the entry then uses, and kept, so it can be opened again and edited layer by layer.
+
+    Attributes:
+        registry: Literal["characters","props","locations"] - Which registry its entry is in.
+        entry_id: str - The entry it's drawn for.
+        slot: str - The orientation (for a character or prop) or facing (for a location) it's drawn for.
+        width: int - Width of its frame, in pixels.
+        height: int - Height of its frame, in pixels.
+        layers: list[Layer] - The layer graph, bottom to top. Defaults to [].
+        version: int - Bumped on every save, so a save made from an out-of-date copy can be refused. Defaults to 0.
+    """
+    registry: Literal["characters", "props", "locations"]
+    entry_id: str
+    slot: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    layers: list[Layer] = Field(default_factory=list)
+    version: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def layer_graph_is_valid(self) -> "Sketch":
+        """
+        Rejects a sketch with generated layers in it (nothing is generated in a sketch), two layers sharing an ID, or a drawing too big to store.
+        """
+        if any(isinstance(layer, GeneratedLayer) for layer in flatten(self.layers)):
+            raise ValueError("A sketch can't hold background, character or prop layers")
+        _check_layer_graph(self.layers, "sketch")
         return self
 
 class Project(Model):

@@ -3,12 +3,19 @@
  *
  * Types come from src/api/schema.d.ts, generated from the backend's OpenAPI schema (npm run gen:api).
  *
- * Every request carries the signed-in user's Cognito access token -- the API's JWT authorizer refuses anything without one.
+ * Every request carries a Cognito access token -- the signed-in user's, or (browsing as a guest) the guest's. The API's
+ * JWT authorizer refuses anything without one.
  */
 import { fetchAuthSession } from "aws-amplify/auth"
 import createClient from "openapi-fetch"
 
 import type { paths } from "@/api/schema"
+import {
+  endGuestSession,
+  guestAccessToken,
+  isGuest,
+  renewGuestSession,
+} from "@/lib/guest"
 
 const apiUrl = import.meta.env.VITE_API_URL
 
@@ -21,17 +28,36 @@ export const api = createClient<paths>({
   baseUrl: apiUrl?.replace(/\/+$/, ""),
 })
 
+/**
+ * The token to send: a signed-in user's (Amplify swaps an expired one for a fresh one first, using its refresh
+ * token) -- or, with nobody signed in, the guest's. A real session always wins, and ends any guest session left over.
+ */
+async function accessToken(): Promise<string | null> {
+  const { tokens } = await fetchAuthSession()
+  if (tokens?.accessToken) {
+    endGuestSession()
+    return tokens.accessToken.toString()
+  }
+  return guestAccessToken()
+}
+
 api.use({
   async onRequest({ request }) {
-    // Amplify swaps an expired access token for a fresh one first (using the refresh token), so this is always current
-    const { tokens } = await fetchAuthSession()
-    if (tokens?.accessToken) {
-      request.headers.set(
-        "Authorization",
-        `Bearer ${tokens.accessToken.toString()}`
-      )
+    const token = await accessToken()
+    if (token) {
+      request.headers.set("Authorization", `Bearer ${token}`)
     }
     return request
+  },
+  async onResponse({ request, response }) {
+    // A guest token that ran out anyway (a sleeping laptop, say): get a new one, and try once more. Only a read -- a
+    // guest's writes are refused anyway, and a sent body can't be sent again
+    if (response.status === 401 && request.method === "GET" && isGuest()) {
+      const retry = new Request(request)
+      retry.headers.set("Authorization", `Bearer ${await renewGuestSession()}`)
+      return fetch(retry)
+    }
+    return response
   },
 })
 

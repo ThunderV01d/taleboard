@@ -2,12 +2,15 @@
 Routes for shots: list, create, read, save, reorder and delete -- always within their scene.
 
 A save carries the version the editor loaded, and is refused with a 409 if the shot has been saved since. Every character and prop a shot's layers show must exist in the project's registries.
+
+Every shot comes back with which of its layers are out of date (and what changed), so the editor shows it. This is worked out here, by the same rule generation uses to pick out what to draw.
 """
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 
 from taleboard.api.deps import get_boards, get_project, image_urls, not_found
+from taleboard.generation.planning import Registry, out_of_date
 from taleboard.schema.enums import CameraAngle, ShotSize
 from taleboard.schema.layers import BackgroundLayer, CharacterLayer, Layer, PropLayer
 from taleboard.schema.storyboard import Character, Project, Prop, Scene, Shot
@@ -72,27 +75,33 @@ class ShotOrderIn(BaseModel):
 
 class ShotOut(Shot):
     """
-    A shot, with a download URL for each of its layers' images.
+    A shot, with a download URL for each of its layers' images, and which of its layers are out of date.
 
     Attributes:
         image_urls: dict[str,str] - Download URL for each image key in the shot.
+        out_of_date: dict[str,list[str]] - Each generated layer that needs drawing, by ID: the names of what's chanegd since it was drawn (empty if it never has been). Layers that are up to date are not listed.
     """
     image_urls: dict[str, str] = Field(default_factory=dict)
+    out_of_date: dict[str, list[str]] = Field(default_factory=dict)
 
-def _out(boards: StoryboardStore, project: Project, shot: Shot) -> ShotOut:
+
+def _out(boards: StoryboardStore, project: Project, scene: Scene, shot: Shot, registry: Registry | None = None) -> ShotOut:
     """
-    Adds download URLs for the images of every layer that has one, groups' children included.
+    Adds download URLs for the images of every layer that has one (groups' children included), and which layers are out of date.
 
     Arguments:
         boards: StoryboardStore - Store that signs the URLs.
         project: Project - The project.
+        scene: Scene - The shot's scene.
         shot: Shot - The shot.
+        registry: Registry | None - The project's registries, if loaded already (for a list of shots). Defaults t o None (loaded here).
 
     Returns:
-        ShotOut - The shot, with its image URLs.
+        ShotOut - The shot, with its image URLs and what's out of date.
     """
+    registry = registry or Registry.load(boards,project.project_id)
     keys = (getattr(layer, "image", None) for layer in shot.all_layers())  # Text and group layers have no image
-    return ShotOut(**shot.model_dump(), image_urls=image_urls(boards, project.project_id, keys))
+    return ShotOut(**shot.model_dump(), image_urls=image_urls(boards, project.project_id, keys), out_of_date=out_of_date(shot, scene, registry))
 
 def _load(boards: StoryboardStore, project: Project, scene: Scene, shot_id: str) -> Shot:
     """
@@ -150,7 +159,8 @@ def list_shots(project: Project = Depends(get_project), scene: Scene = Depends(g
     """
     Lists the scene's shots, in order.
     """
-    return [_out(boards, project, shot) for shot in boards.list_shots(project.project_id, scene.id)]
+    registry = Registry.load(boards, project.project_id)
+    return [_out(boards, project, scene, shot, registry) for shot in boards.list_shots(project.project_id, scene.id)]
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ShotOut)
 def create_shot(body: ShotIn, project: Project = Depends(get_project), scene: Scene = Depends(get_scene), boards: StoryboardStore = Depends(get_boards)) -> ShotOut:
@@ -161,7 +171,7 @@ def create_shot(body: ShotIn, project: Project = Depends(get_project), scene: Sc
     order = max((s.order for s in existing), default=-1) + 1
     shot = Shot(scene_id=scene.id, order=order, layers=[BackgroundLayer(name="Background")], **body.model_dump())
     boards.create_shot(project.project_id, shot)
-    return _out(boards, project, shot)
+    return _out(boards, project, scene, shot)
 
 @router.put("/order", response_model=list[ShotOut])
 def reorder_shots(body: ShotOrderIn, project: Project = Depends(get_project), scene: Scene = Depends(get_scene), boards: StoryboardStore = Depends(get_boards)) -> list[ShotOut]:
@@ -171,12 +181,13 @@ def reorder_shots(body: ShotOrderIn, project: Project = Depends(get_project), sc
     shots = {shot.id: shot for shot in boards.list_shots(project.project_id, scene.id)}
     if len(body.shot_ids) != len(set(body.shot_ids)) or set(body.shot_ids) != set(shots):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "shot_ids must list every shot in the scene exactly once")
+    registry = Registry.load(boards, project.project_id)
     reordered = []
     for order, shot_id in enumerate(body.shot_ids):
         shot = shots[shot_id]
         if shot.order != order:
             shot = boards.save_shot(project.project_id, shot.model_copy(update={"order": order}))
-        reordered.append(_out(boards, project, shot))
+        reordered.append(_out(boards, project, scene, shot, registry))
     return reordered
 
 @router.get("/{shot_id}", response_model=ShotOut)
@@ -184,7 +195,7 @@ def read_shot(shot_id: str, project: Project = Depends(get_project), scene: Scen
     """
     Gets one shot.
     """
-    return _out(boards, project, _load(boards, project, scene, shot_id))
+    return _out(boards, project, scene, _load(boards, project, scene, shot_id))
 
 @router.put("/{shot_id}", response_model=ShotOut)
 def save_shot(shot_id: str, body: ShotSave, project: Project = Depends(get_project), scene: Scene = Depends(get_scene), boards: StoryboardStore = Depends(get_boards)) -> ShotOut:
@@ -198,7 +209,7 @@ def save_shot(shot_id: str, body: ShotSave, project: Project = Depends(get_proje
         saved = boards.save_shot(project.project_id, shot)
     except KeyError as error:  # Deleted since it was loaded above
         raise not_found(error) from None
-    return _out(boards, project, saved)
+    return _out(boards, project, scene, saved)
 
 @router.delete("/{shot_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_shot(shot_id: str, project: Project = Depends(get_project), scene: Scene = Depends(get_scene), boards: StoryboardStore = Depends(get_boards)) -> Response:

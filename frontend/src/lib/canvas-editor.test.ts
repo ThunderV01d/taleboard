@@ -1,5 +1,5 @@
 /**
- * Unit tests for the canvas editor's state (lib/shot-editor.ts): undo and redo, merging typing into one step,
+ * Unit tests for the canvas editor's state (lib/canvas-editor.ts): undo and redo, merging typing into one step,
  * selection, and when the draft counts as unsaved.
  *
  * Run with: npm test
@@ -12,18 +12,23 @@ import {
   editorReducer,
   initialState,
   isDirty,
-  toSaveBody,
   type Draft,
+  type EditorAction,
   type EditorState,
-} from "@/lib/shot-editor"
-import type { Shot } from "@/lib/shots"
+  type Saved,
+} from "@/lib/canvas-editor"
+import { savedShot, type ShotFields } from "@/lib/shots"
 
-function shot(layers: Layer[] = [], version = 0): Shot {
-  return {
+function shot(
+  layers: Layer[] = [],
+  version = 0,
+  description = ""
+): Saved<ShotFields> {
+  return savedShot({
     id: "shot",
     scene_id: "scene",
     order: 0,
-    description: "",
+    description,
     duration_s: 2,
     shot_size: "medium",
     angle: "eye_level",
@@ -31,21 +36,22 @@ function shot(layers: Layer[] = [], version = 0): Shot {
     layers,
     version,
     image_urls: {},
-  }
+    out_of_date: {},
+  })
 }
 
 const rename =
   (name: string) =>
-  (draft: Draft): Draft => ({
+  (draft: Draft<ShotFields>): Draft<ShotFields> => ({
     ...draft,
     fields: { ...draft.fields, description: name },
   })
 
 function run(
-  state: EditorState,
-  ...actions: Parameters<typeof editorReducer>[1][]
+  state: EditorState<ShotFields>,
+  ...actions: EditorAction<ShotFields>[]
 ) {
-  return actions.reduce(editorReducer, state)
+  return actions.reduce(editorReducer<ShotFields>, state)
 }
 
 describe("the canvas editor's state", () => {
@@ -138,12 +144,12 @@ describe("the canvas editor's state", () => {
     })
     const saved = run(edited, {
       type: "saved",
-      shot: { ...shot(), description: "a", version: 1 },
+      saved: shot([], 1, "a"),
     })
 
     expect(saved.draft).toBe(edited.draft)
     expect(isDirty(saved)).toBe(false)
-    expect(toSaveBody(saved).version).toBe(1)
+    expect(saved.baseline.version).toBe(1)
   })
 
   it("stays dirty when edited while a save was in flight", () => {
@@ -154,7 +160,7 @@ describe("the canvas editor's state", () => {
     const editedMeanwhile = run(sent, { type: "edit", change: rename("ab") })
     const saved = run(editedMeanwhile, {
       type: "saved",
-      shot: { ...shot(), description: "a", version: 1 },
+      saved: shot([], 1, "a"),
     })
 
     expect(isDirty(saved)).toBe(true)
@@ -174,7 +180,7 @@ describe("the canvas editor's state", () => {
     } as Layer
     const saved = run(edited, {
       type: "saved",
-      shot: shot([reordered], 1),
+      saved: shot([reordered], 1),
     })
 
     expect(isDirty(saved)).toBe(false)
@@ -185,7 +191,7 @@ describe("the canvas editor's state", () => {
       type: "edit",
       change: rename("a"),
     })
-    const loaded = run(edited, { type: "load", shot: shot([], 5) })
+    const loaded = run(edited, { type: "load", saved: shot([], 5) })
 
     expect([
       loaded.draft.fields.description,
@@ -211,7 +217,11 @@ describe("merging what generation drew", () => {
   it("tells a generation save from someone's edit", () => {
     const loaded = shot([background(null)], 1)
     const drawn = shot([background("plates/north.png")], 2)
-    const edited = { ...drawn, description: "someone else's edit" }
+    const edited = shot(
+      [background("plates/north.png")],
+      2,
+      "someone else's edit"
+    )
 
     expect(onlyDrawnSince(loaded, drawn)).toBe(true)
     expect(onlyDrawnSince(loaded, edited)).toBe(false)
@@ -226,7 +236,7 @@ describe("merging what generation drew", () => {
 
     const merged = run(edited, {
       type: "merge",
-      shot: shot([background("plates/north.png")], 2),
+      saved: shot([background("plates/north.png")], 2),
     })
 
     expect((merged.draft.layers[0] as { image: string }).image).toBe(
@@ -236,7 +246,7 @@ describe("merging what generation drew", () => {
       "typed while it was being drawn"
     )
     expect(isDirty(merged)).toBe(true)
-    expect(toSaveBody(merged).version).toBe(2)
+    expect(merged.baseline.version).toBe(2)
   })
 
   it("puts the image into the undo history too, so undoing never takes it away", () => {
@@ -249,7 +259,7 @@ describe("merging what generation drew", () => {
 
     const merged = run(edited, {
       type: "merge",
-      shot: shot([background("plates/north.png")], 2),
+      saved: shot([background("plates/north.png")], 2),
     })
     const undone = run(merged, { type: "undo" }, { type: "undo" })
 
@@ -268,7 +278,7 @@ describe("merging what generation drew", () => {
 
     const merged = run(deleted, {
       type: "merge",
-      shot: shot([background("plates/north.png")], 2),
+      saved: shot([background("plates/north.png")], 2),
     })
 
     expect(merged.draft.layers).toEqual([])

@@ -41,7 +41,8 @@ class FakeGenerator:
         if isinstance(layer, CharacterLayer):
             characters[layer.character_id]  # A KeyError, as the engine gives, for a character gone from the registry
         self.drawn.append(layer.id)
-        return layer.model_copy(update={"image": f"drawn/{layer.id}.png", "last_generated_params": layer.current_params(shot.generation_context(scene))})
+        entry = location if isinstance(layer, BackgroundLayer) else characters.get(getattr(layer, "character_id", None)) or props.get(getattr(layer, "prop_id", None))
+        return layer.model_copy(update={"image": f"drawn/{layer.id}.png", "last_generated_params": layer.current_params(shot.generation_context(scene), entry)})
 
 
 @pytest.fixture

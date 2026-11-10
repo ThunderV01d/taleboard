@@ -56,7 +56,7 @@ def test_a_location_starts_with_no_plates_and_only_takes_compass_facings():
     """
     office = Location(id="office", name="Office", plates={"north": "plates/office-north.png"})
 
-    assert office.plates == {Facing.NORTH: "plates/office-north.png"}
+    assert office.plates == {Facing.NORTH: Reference(image="plates/office-north.png", source="generated")}  # A bare key (as plates were stored before sketches) reads as generated
     with pytest.raises(ValidationError):
         Location(id="office", name="Office", plates={"up": "x.png"})
 
@@ -152,12 +152,12 @@ def test_changing_a_scenes_lighting_makes_its_shots_backgrounds_need_regeneratin
     scene = _scene()
     shot = Shot(scene_id=scene.id, layers=[BackgroundLayer()])
     background = shot.layers[0]
-    background.last_generated_params = background.current_params(shot.generation_context(scene))
-    assert background.needs_regeneration(shot.generation_context(scene)) is False
+    background.last_generated_params = background.current_params(shot.generation_context(scene), None)
+    assert background.needs_regeneration(shot.generation_context(scene), None) is False
 
     scene.time_of_day = TimeOfDay.DUSK
 
-    assert background.needs_regeneration(shot.generation_context(scene)) is True
+    assert background.needs_regeneration(shot.generation_context(scene), None) is True
 
 
 def test_moving_a_scene_to_another_location_makes_its_shots_backgrounds_need_regenerating():
@@ -167,11 +167,11 @@ def test_moving_a_scene_to_another_location_makes_its_shots_backgrounds_need_reg
     scene = _scene()
     shot = Shot(scene_id=scene.id, layers=[BackgroundLayer()])
     background = shot.layers[0]
-    background.last_generated_params = background.current_params(shot.generation_context(scene))
+    background.last_generated_params = background.current_params(shot.generation_context(scene), None)
 
     scene.location_id = "quay"
 
-    assert background.needs_regeneration(shot.generation_context(scene)) is True
+    assert background.needs_regeneration(shot.generation_context(scene), None) is True
 
 
 def test_a_shot_round_trips_through_plain_data():
@@ -181,7 +181,7 @@ def test_a_shot_round_trips_through_plain_data():
     scene = _scene()
     character = CharacterLayer(character_id="mara", action="waving", image="poses/mara.png")
     shot = Shot(scene_id=scene.id, layers=[BackgroundLayer(facing=Facing.WEST), GroupLayer(children=[character])])
-    character.last_generated_params = character.current_params(shot.generation_context(scene))
+    character.last_generated_params = character.current_params(shot.generation_context(scene), None)
 
     assert Shot.model_validate_json(shot.model_dump_json()) == shot
 

@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw
 from taleboard.generation import prompts
 from taleboard.generation.engine import Generator
 from taleboard.generation.cutouts import to_monochrome
-from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, ShotSize, TimeOfDay
+from taleboard.schema.enums import Atmosphere, CameraAngle, Facing, Orientation, Setting, ShotSize, TimeOfDay
 from taleboard.schema.storyboard import Character, Location, Prop
 
 OUTPUT_DIR = Path(__file__).parent / "output" / "engine"
@@ -378,3 +378,61 @@ def test_facings_with_their_own_descriptions():
     results = _run(store, steps, "facings_sheet.png")
 
     assert all(image for label, image in results if label)
+
+
+STATION = Location(
+    id="station", name="Station concourse", setting=Setting.INT,
+    description="a large railway station concourse under a high iron-and-glass roof, brightly lit by rows of hanging lamps",
+    views={Facing.NORTH: "the departure boards above a row of ticket windows, with benches in front and a big clock hanging from the roof"},
+)
+
+# Candidate interior night wordings: lit by the place's own lights (as bright as they would make it), dark only beyond its windows
+INTERIOR_NIGHTS = {
+    "lights on, windows dark": (
+        "at night: lit only by its own lights, all switched on and as bright as they make the place, "
+        "every window and glass panel showing black night outside, cross-hatched shadow only where its lights do not reach, "
+    ),
+    "same light, night outside": (
+        "at night: the place keeps the light it has, from its own lamps and fittings, "
+        "only the windows and any glass to the outside turned dark with night, "
+    ),
+    # Round two: names no window (FLUX draws what's named -- test_generation_prompts forbids it indoors)
+    "lights on, no window named": (
+        "at night: lit only by its own lights, all switched on and as bright as they make the place, "
+        "black night showing through anything that looks outside, cross-hatched shadow only where its lights do not reach, "
+    ),
+}
+
+
+@pytest.mark.integration
+def test_interior_night_keeps_the_places_own_light():
+    """
+    Tries interior night wordings that keep a place lit by its own lights, beside the current one (which dims every interior). Checks, by eye:
+
+    - a brightly lit station concourse: still bright at night, with the night only in its glass roof (the current wording greys the whole place);
+    - the office the current wording was tuned on: still reads as night (a dark window), with no lamps added that aren't there;
+    - the office's windowless south wall: no window drawn in by a wording that names windows (round two).
+
+    About 7 new images, about $0.11 -- the office plate is reused from test_facings_with_their_own_descriptions if it's on disk.
+    """
+    store = DiskStore(OUTPUT_DIR)
+    generator = Generator("trial", store)
+    station = lambda: generator._background("plate", prompts.plate_prompt(STATION, Facing.NORTH), [])
+    office = lambda: generator._background("plate", _side_prompt(OFFICE_COMMON, OFFICE_SIDES[Facing.NORTH], True, False), [])
+    office_south = lambda: generator._background("plate", _side_prompt(OFFICE_COMMON, OFFICE_SIDES[Facing.SOUTH], True, True), [office()])
+
+    def night(source, wording: str | None) -> str:
+        change = wording if wording is not None else prompts.TIME_OF_DAY_PHRASES[Setting.INT][TimeOfDay.NIGHT]
+        prompt = "Storyboard panel, " + prompts.STYLE + "filling full frame, " + prompts.LIGHTING_EDIT_PHRASES[Setting.INT] + change.rstrip(", ")
+        return generator._background("lighting", prompt, [source()])
+
+    steps = [("station (day)", station), ("station, night (current)", lambda: night(station, None))]
+    steps += [(f"station, night ({name})", lambda w=wording: night(station, w)) for name, wording in INTERIOR_NIGHTS.items()]
+    steps += [("office (day)", office), ("office, night (current)", lambda: night(office, None))]
+    steps += [(f"office, night ({name})", lambda w=wording: night(office, w)) for name, wording in INTERIOR_NIGHTS.items()]
+    steps += [("office south, no window (day)", office_south), ("office south, night (current)", lambda: night(office_south, None))]
+    steps += [(f"office south, night ({name})", lambda w=INTERIOR_NIGHTS[name]: night(office_south, w)) for name in ("lights on, windows dark", "lights on, no window named")]
+
+    results = _run(store, steps, "interior_night_sheet.png")
+
+    assert all(image for _, image in results)

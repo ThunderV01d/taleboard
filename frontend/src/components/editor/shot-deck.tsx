@@ -14,12 +14,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ANGLE_LABELS, SHOT_SIZE_LABELS } from "@/lib/labels"
+import { shotFreshness } from "@/lib/staleness"
 import type { Shot } from "@/lib/shots"
 import { cn } from "@/lib/utils"
 
 /**
  * The shot deck along the bottom of the editor: the scene's shots in order, then "+" for a new one. Drag a shot by
- * its grip to move it; click it to open it.
+ * its grip to move it; click it to open it. Each says how many of its layers are out of date or not drawn yet.
  */
 export function ShotDeck({
   shots,
@@ -29,6 +30,7 @@ export function ShotDeck({
   onReorder,
   onDelete,
   drawing,
+  readOnly = false,
 }: {
   shots: Shot[]
   selectedId: string | null
@@ -38,6 +40,8 @@ export function ShotDeck({
   onDelete: (shot: Shot) => void
   /** IDs of the shots with a layer waiting or being drawn */
   drawing: Set<string>
+  /** Opening shots only -- no new shot, reordering or deleting (a project shared to view) */
+  readOnly?: boolean
 }) {
   return (
     // Padded, so a card's highlight (drawn just outside it) isn't clipped by the scrolling row
@@ -51,6 +55,7 @@ export function ShotDeck({
           <SortableItem
             key={shot.id}
             id={shot.id}
+            disabled={readOnly}
             className={cn(
               "relative flex w-60 shrink-0 rounded-lg border bg-card transition-shadow",
               shot.id === selectedId
@@ -77,49 +82,82 @@ export function ShotDeck({
                     <span className="line-clamp-2 text-xs text-muted-foreground">
                       {shot.description || "No description"}
                     </span>
-                    {drawing.has(shot.id) && (
+                    {drawing.has(shot.id) ? (
                       <span className="flex items-center gap-1 text-xs text-primary">
                         <LoaderCircleIcon className="size-3 animate-spin" />
                         Drawing
                       </span>
+                    ) : (
+                      <PictureStatus shot={shot} />
                     )}
                   </span>
                 </button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="secondary"
-                      size="icon-xs"
-                      className="absolute top-2 right-2"
-                      aria-label={`Actions for shot ${i + 1}`}
-                    >
-                      <EllipsisIcon />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={() => onDelete(shot)}
-                    >
-                      <Trash2Icon />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {!readOnly && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="secondary"
+                        size="icon-xs"
+                        className="absolute top-2 right-2"
+                        aria-label={`Actions for shot ${i + 1}`}
+                      >
+                        <EllipsisIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => onDelete(shot)}
+                      >
+                        <Trash2Icon />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </>
             )}
           </SortableItem>
         ))}
       </SortableList>
-      <li className="shrink-0">
-        <button
-          className="flex h-full min-h-16 w-32 items-center justify-center gap-1 rounded-lg border border-dashed text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
-          onClick={onNew}
-        >
-          <PlusIcon className="size-4" />
-          New shot
-        </button>
-      </li>
+      {!readOnly && (
+        <li className="shrink-0">
+          <button
+            className="flex h-full min-h-16 w-32 items-center justify-center gap-1 rounded-lg border border-dashed text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            onClick={onNew}
+          >
+            <PlusIcon className="size-4" />
+            New shot
+          </button>
+        </li>
+      )}
     </ol>
+  )
+}
+
+/**
+ * A shot's layers that need drawing: how many are out of date (an amber dot) and how many aren't drawn yet -- nothing,
+ * if every one is up to date.
+ */
+function PictureStatus({ shot }: { shot: Shot }) {
+  const { stale, undrawn } = shotFreshness(shot)
+  if (stale === 0 && undrawn === 0) {
+    return null
+  }
+  return (
+    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+      <span
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          stale > 0 ? "bg-amber-500" : "border border-muted-foreground"
+        )}
+      />
+      {[
+        stale > 0 && `${stale} out of date`,
+        undrawn > 0 && `${undrawn} not drawn`,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
+    </span>
   )
 }

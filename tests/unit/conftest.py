@@ -11,6 +11,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from taleboard.auth import guest_session
 from taleboard.storage.storyboard_store import PROJECTS_INDEX
 
 TABLE = "taleboard-test"
@@ -51,3 +52,26 @@ def aws(monkeypatch):
         monkeypatch.setenv("AWS_REGION", REGION)
         monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)  # Region-less clients (eg:- the worker's SSM client) read this one, not AWS_REGION
         yield
+
+
+@pytest.fixture
+def guest_pool(aws, monkeypatch):
+    """
+    A fake user pool with the guests group and a guest app client (admin password sign-in only), and the guest's password in a fake secret -- with the Lambda's environment pointed at them.
+
+    Returns:
+        dict - The pool's ID ("pool"), the guest client's ID ("client") and the Cognito client ("idp").
+    """
+    idp = boto3.client("cognito-idp", region_name=REGION)
+    pool = idp.create_user_pool(PoolName="users", UsernameAttributes=["email"])["UserPool"]["Id"]
+    idp.create_group(UserPoolId=pool, GroupName=guest_session.GUEST_GROUP)
+    client = idp.create_user_pool_client(UserPoolId=pool, ClientName="guest", ExplicitAuthFlows=["ALLOW_ADMIN_USER_PASSWORD_AUTH"])["UserPoolClient"]["ClientId"]
+    secret = boto3.client("secretsmanager", region_name=REGION).create_secret(Name="guest-password", SecretString="A-long-random-guest-password-1")["ARN"]
+    monkeypatch.setenv("TALEBOARD_USER_POOL_ID", pool)
+    monkeypatch.setenv("TALEBOARD_GUEST_CLIENT_ID", client)
+    monkeypatch.setenv("TALEBOARD_GUEST_SECRET", secret)
+    guest_session._cognito.cache_clear()
+    guest_session._password.cache_clear()
+    yield {"pool": pool, "client": client, "idp": idp}
+    guest_session._cognito.cache_clear()
+    guest_session._password.cache_clear()

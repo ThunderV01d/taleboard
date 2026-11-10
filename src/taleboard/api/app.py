@@ -3,7 +3,7 @@ TaleBoard's HTTP API -- the editor's projects, registries, scenes and shots. Eac
 
 Imports nothing that loads the image models (background removal) or the story breakdown -- either would add seconds to every cold start of the API Lambda.
 
-Every endpoint needs a signed-in user. API Gateway's JWT authorizer checks the Cognito access token before the Lambda runs; get_user_id then refuses any request that arrives without one.
+Every endpoint needs a signed-in user. API Gateway's JWT authorizer checks the Cognito access token before the Lambda runs; get_user_id then refuses any request that arrives without one. What each user may do with a project is decided by get_project_access (see taleboard.api.deps), and the shared guest user is refused every change by refuse_guest_writes.
 
 Attributes:
     app: FastAPI - The FastAPI application.
@@ -18,16 +18,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 
-from taleboard.api.deps import get_user_id
-from taleboard.api.routes import projects, registries, scenes, shots, uploads, generation, imports
 from taleboard.storage.storyboard_store import ShotConflictError
+from taleboard.api.deps import get_user_id, refuse_guest_writes
+from taleboard.api.routes import projects, registries, scenes, shots, uploads, generation, imports, shares
 
-app = FastAPI(title="TaleBoard API", dependencies=[Depends(get_user_id)])
+app = FastAPI(title="TaleBoard API", dependencies=[Depends(get_user_id), Depends(refuse_guest_writes)])
 
 @app.exception_handler(ShotConflictError)
 async def shot_conflict(request: Request, error: ShotConflictError) -> JSONResponse:
     """
-    Answers a save from an out-of-date copy of a shot with 409 Conflict, and the shot's current version so the client can reload it.
+    Answers a save from an out-of-date copy of a shot (or a sketch -- a SketchConflictError is one) with 409 Conflict, and the its current version so the client can reload it.
 
     Arguments:
         request: Request - The request that clashed.
@@ -47,6 +47,7 @@ app.include_router(shots.router)
 app.include_router(uploads.router)
 app.include_router(generation.router)
 app.include_router(imports.router)
+app.include_router(shares.router)
 
 # lifespan="off": startup/shutdown hooks don't map onto Lambda's invoke model, and the store is already cached per container by get_boards
 handler = Mangum(app, lifespan="off")

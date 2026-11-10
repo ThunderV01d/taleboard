@@ -440,6 +440,16 @@ describe("backgrounds, groups and what a delete takes with it", () => {
     ).toEqual(["north", null])
   })
 
+  it("centres new layers on the frame they're for -- a shot's, or a tall sketch's", () => {
+    const tall = { width: 512, height: 1024 }
+    const centre = (layer: Layer) => [layer.transform.x, layer.transform.y]
+
+    expect(centre(newGroupLayer())).toEqual([512, 512])
+    expect(centre(newGroupLayer(tall))).toEqual([256, 512])
+    expect(centre(newImageLayer("key", "Image", tall))).toEqual([256, 512])
+    expect(centre(newTextLayer(tall))).toEqual([256, 1024 * 0.85])
+  })
+
   it("lists everything inside a group, top first, nested groups included", () => {
     const g = group("g", [image("a"), group("h", [image("b"), image("c")])])
     expect(ids(descendantsOf(g))).toEqual(["h", "c", "b", "a"])

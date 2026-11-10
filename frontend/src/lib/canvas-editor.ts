@@ -1,34 +1,34 @@
 /**
- * The canvas editor's state: the shot being edited, its undo history, and what's selected.
+ * The canvas editor's state: the document being edited (a shot, or a sketch), its undo history, and what's selected.
  *
  * Every edit makes a new draft (the layer functions in lib/layers.ts never change a list in place), so undo is just
- * going back to the previous draft. The baseline is the shot as last saved -- the draft is "dirty" while it differs.
+ * going back to the previous draft. The baseline is the document as last saved -- the draft is "dirty" while it
+ * differs.
  *
- * Generation saves images into the shot on the server while it's open here. Such a save changes nothing but layers'
+ * Generation saves images into a shot on the server while it's open here. Such a save changes nothing but layers'
  * images and what they were drawn from, so it's merged in -- into the draft and its whole undo history, so undoing
  * never takes a drawn image away -- rather than treated as someone else's edit.
  */
 import type { Layer } from "@/lib/layers"
-import type { Shot, ShotSave } from "@/lib/shots"
 
-/** The shot fields edited alongside the layers */
-export type ShotFields = Pick<
-  Shot,
-  "description" | "duration_s" | "shot_size" | "angle" | "details"
->
+/**
+ * Everything a save sends (apart from the version): the layers, and the document's own fields edited alongside them
+ * (a shot's framing -- a sketch has none).
+ */
+export type Draft<F = unknown> = { fields: F; layers: Layer[] }
 
-/** Everything a save sends (apart from the version) */
-export type Draft = { fields: ShotFields; layers: Layer[] }
+/** A document as it was last saved (or loaded): its content, and the version the next save sends */
+export type Saved<F = unknown> = { version: number; draft: Draft<F> }
 
 /** Undo goes back at most this many edits */
 const HISTORY_LIMIT = 100
 
-export type EditorState = {
-  /** The shot as last saved (or loaded) -- its version is what the next save sends */
-  baseline: Shot
-  draft: Draft
-  past: Draft[]
-  future: Draft[]
+export type EditorState<F = unknown> = {
+  /** The document as last saved (or loaded) -- its version is what the next save sends */
+  baseline: Saved<F>
+  draft: Draft<F>
+  past: Draft<F>[]
+  future: Draft<F>[]
   /** Selected layer IDs, in the order they were picked */
   selection: string[]
   /**
@@ -38,35 +38,27 @@ export type EditorState = {
   mergeKey: string | null
 }
 
-export type EditorAction =
+export type EditorAction<F = unknown> =
   | {
       type: "edit"
-      change: (draft: Draft) => Draft
+      change: (draft: Draft<F>) => Draft<F>
       mergeKey?: string
       select?: string[]
     }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "select"; ids: string[] }
-  | { type: "saved"; shot: Shot }
-  | { type: "load"; shot: Shot }
-  | { type: "merge"; shot: Shot }
-
-export function draftOf(shot: Shot): Draft {
-  const { description, duration_s, shot_size, angle, details, layers } = shot
-  return {
-    fields: { description, duration_s, shot_size, angle, details },
-    layers,
-  }
-}
+  | { type: "saved"; saved: Saved<F> }
+  | { type: "load"; saved: Saved<F> }
+  | { type: "merge"; saved: Saved<F> }
 
 /**
- * The editor's starting state for a shot.
+ * The editor's starting state for a document.
  */
-export function initialState(shot: Shot): EditorState {
+export function initialState<F>(saved: Saved<F>): EditorState<F> {
   return {
-    baseline: shot,
-    draft: draftOf(shot),
+    baseline: saved,
+    draft: saved.draft,
     past: [],
     future: [],
     selection: [],
@@ -78,7 +70,7 @@ export function initialState(shot: Shot): EditorState {
  * True when two drafts hold the same content. Key order doesn't count: the API sends fields back in its own order,
  * which needn't match the order the editor built them in.
  */
-export function sameDraft(a: Draft, b: Draft): boolean {
+export function sameDraft<F>(a: Draft<F>, b: Draft<F>): boolean {
   return canonical(a) === canonical(b)
 }
 
@@ -96,22 +88,12 @@ function canonical(value: unknown): string {
 /**
  * True while the draft differs from what was last saved.
  */
-export function isDirty(state: EditorState): boolean {
-  return !sameDraft(state.draft, draftOf(state.baseline))
-}
-
-/**
- * The request body that saves the draft over the baseline's version.
- */
-export function toSaveBody(
-  state: EditorState,
-  version = state.baseline.version
-): ShotSave {
-  return { ...state.draft.fields, layers: state.draft.layers, version }
+export function isDirty<F>(state: EditorState<F>): boolean {
+  return !sameDraft(state.draft, state.baseline.draft)
 }
 
 /** Selected IDs that still exist (an undo can remove a layer that was selected) */
-function stillThere(selection: string[], draft: Draft): string[] {
+function stillThere<F>(selection: string[], draft: Draft<F>): string[] {
   const ids = new Set<string>()
   const walk = (layers: Layer[]) =>
     layers.forEach((layer) => {
@@ -154,12 +136,15 @@ function withoutDrawn(layers: Layer[]): Layer[] {
 }
 
 /**
- * True when a newer copy of the shot differs from the one it was loaded as only in what generation writes (layers'
+ * True when a newer copy of a shot differs from the one it was loaded as only in what generation writes (layers'
  * images and the params they were drawn from) -- the worker's save, not someone's edit.
  */
-export function onlyDrawnSince(baseline: Shot, newer: Shot): boolean {
-  const before = draftOf(baseline)
-  const after = draftOf(newer)
+export function onlyDrawnSince<F>(
+  baseline: Saved<F>,
+  newer: Saved<F>
+): boolean {
+  const before = baseline.draft
+  const after = newer.draft
   return sameDraft(
     { ...before, layers: withoutDrawn(before.layers) },
     { ...after, layers: withoutDrawn(after.layers) }
@@ -167,7 +152,10 @@ export function onlyDrawnSince(baseline: Shot, newer: Shot): boolean {
 }
 
 /** What generation changed between two copies of a shot: each changed layer's new image and params, by layer ID */
-function drawnSince(baseline: Shot, newer: Shot): Map<string, Drawn> {
+function drawnSince<F>(
+  baseline: Saved<F>,
+  newer: Saved<F>
+): Map<string, Drawn> {
   const before = new Map<string, string>()
   const walk = (layers: Layer[], visit: (layer: Layer) => void) =>
     layers.forEach((layer) => {
@@ -176,7 +164,7 @@ function drawnSince(baseline: Shot, newer: Shot): Map<string, Drawn> {
         walk(layer.children, visit)
       }
     })
-  walk(baseline.layers, (layer) => {
+  walk(baseline.draft.layers, (layer) => {
     if (isGenerated(layer)) {
       before.set(
         layer.id,
@@ -185,7 +173,7 @@ function drawnSince(baseline: Shot, newer: Shot): Map<string, Drawn> {
     }
   })
   const changed = new Map<string, Drawn>()
-  walk(newer.layers, (layer) => {
+  walk(newer.draft.layers, (layer) => {
     if (
       isGenerated(layer) &&
       canonical([layer.image, layer.last_generated_params]) !==
@@ -201,7 +189,7 @@ function drawnSince(baseline: Shot, newer: Shot): Map<string, Drawn> {
 }
 
 /** A draft with these layers' images and params replaced (wherever the layers are now, if they still exist) */
-function withDrawn(draft: Draft, drawn: Map<string, Drawn>): Draft {
+function withDrawn<F>(draft: Draft<F>, drawn: Map<string, Drawn>): Draft<F> {
   if (drawn.size === 0) {
     return draft
   }
@@ -218,10 +206,10 @@ function withDrawn(draft: Draft, drawn: Map<string, Drawn>): Draft {
   return { ...draft, layers: patch(draft.layers) }
 }
 
-export function editorReducer(
-  state: EditorState,
-  action: EditorAction
-): EditorState {
+export function editorReducer<F>(
+  state: EditorState<F>,
+  action: EditorAction<F>
+): EditorState<F> {
   switch (action.type) {
     case "edit": {
       const draft = action.change(state.draft)
@@ -273,18 +261,18 @@ export function editorReducer(
       return { ...state, selection: action.ids, mergeKey: null }
     case "saved":
       // The draft stays as it is -- if it was edited while the save was in flight, it's simply still dirty
-      return { ...state, baseline: action.shot }
+      return { ...state, baseline: action.saved }
     case "load":
       return {
-        ...initialState(action.shot),
-        selection: stillThere(state.selection, draftOf(action.shot)),
+        ...initialState(action.saved),
+        selection: stillThere(state.selection, action.saved.draft),
       }
     case "merge": {
       // Only generation's changes come across; everything else in the draft (and its history) is the user's
-      const drawn = drawnSince(state.baseline, action.shot)
+      const drawn = drawnSince(state.baseline, action.saved)
       return {
         ...state,
-        baseline: action.shot,
+        baseline: action.saved,
         draft: withDrawn(state.draft, drawn),
         past: state.past.map((draft) => withDrawn(draft, drawn)),
         future: state.future.map((draft) => withDrawn(draft, drawn)),

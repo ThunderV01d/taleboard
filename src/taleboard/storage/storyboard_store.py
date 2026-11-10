@@ -10,6 +10,13 @@ Every item of a project shares the partition key PROJECT#{project_id}. The sort 
     SCENE#{scene_id}                 - a scene
     SHOT#{scene_id}#{shot_id}        - a shot, its layer graph included
     JOB#{job_id}                     - a generation job, its tasks included
+    SHARE#{user_id}                  - the project shared with another user, and their role
+
+A shot's sort key starts with its scene's ID, so one query loads a whole scene's shots.
+
+The projects index lists a user's projects: METADATA items carry GSI1PK = OWNER#{owner_id}, and SHARE items carry
+GSI1PK = SHARED#{user_id} -- so the projects someone owns, and those shared with them, are each one query. A share sits
+in its project's partition, so deleting the project deletes its shares with it.
 
 A shot's sort key starts with its scene's ID, so one query loads a whole scene's shots.
 
@@ -30,12 +37,13 @@ from boto3.dynamodb.conditions import Key
 from taleboard.parsing.cast_extraction import slugify
 from taleboard.schema.generation import GenerationJob, JobStatus, TaskStatus
 from taleboard.schema.layers import GeneratedLayer
-from taleboard.schema.storyboard import Character, Location, Project, Prop, Scene, Shot
+from taleboard.schema.sharing import Share, ShareRole
+from taleboard.schema.storyboard import Character, Location, Project, Prop, Scene, Shot, Sketch
 
 Entry = TypeVar("Entry", Character, Prop, Location)
 
 DEFAULT_REGION = "eu-west-2"
-PROJECTS_INDEX = "projects-by-created-at"  # Sparse GSI: only METADATA items carry its keys
+PROJECTS_INDEX = "projects-by-created-at"  # Sparse GSI: only METADATA (owned) and SHARE (shared) items carry its keys
 
 
 def project_pk(project_id: str) -> str:
@@ -92,6 +100,20 @@ def registry_sk(model: type, entry_id: str) -> str:
         str - Sort key, eg:- "PROP#lamp".
     """
     return f"{_REGISTRY_PREFIXES[model]}{entry_id}"
+
+def sketch_sk(model: type, entry_id: str, slot: str) -> str:
+    """
+    Builds the sort key of an entry's sketch for one slot -- under the entry's own key, so deleting the entry can find its sketches.
+
+    Arguments:
+        model: type - Character, Prop or Location.
+        entry_id: str - Unique ID of the entry.
+        slot: str - The orientation or facing it's drawn for.
+
+    Returns:
+        str - The sort key.
+    """
+    return f"SKETCH#{registry_sk(model, entry_id)}#{slot}"
 
 class ShotConflictError(Exception):
     """
@@ -171,6 +193,36 @@ def owner_index_key(owner_id: str) -> str:
         str - The index partition key.
     """
     return f"OWNER#{owner_id}"
+
+def share_sk(user_id: str) -> str:
+    """
+    Builds the sort key of a project's share with one user.
+
+    Arguments:
+        user_id: str - The user it's shared with.
+
+    Returns:
+        str - The sort key.
+    """
+    return f"SHARE#{user_id}"
+
+def shared_index_key(user_id: str) -> str:
+    """
+    Builds the projects index's partition key for the projects shared with one user.
+
+    Arguments:
+        user_id: str - The user.
+
+    Returns:
+        str - The index partition key.
+    """
+    return f"SHARED#{user_id}"
+
+def _share_from_item(item: dict) -> Share:
+    """
+    Turns a SHARE item back into a Share.
+    """
+    return Share(project_id=item["PK"].removeprefix("PROJECT#"), grantee_id=item["grantee_id"], role=item["role"], granted_by=item["granted_by"], created_at=item["created_at"])
 
 def generated_key(project_id: str, kind: str, inputs: dict) -> str:
     """
@@ -305,6 +357,97 @@ class StoryboardStore:
                 return [_project_from_item(item) for item in items]
             query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
+    def share_project(self, project_id: str, grantee_id: str, role: ShareRole, granted_by: str) -> Share:
+        """
+        Shares a project with a user -- or, if it's already shared with them, changes their role.
+
+        Raises a KeyError if no project with this ID exists.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            grantee_id: str - The user to share it with.
+            role: ShareRole - What they may do with it.
+            granted_by: str - The user sharing it.
+
+        Returns:
+            Share - The share.
+        """
+        self.get_project(project_id)  # A KeyError if there's no such project -- a share must never outlive (or precede) its project
+        share = Share(project_id=project_id, grantee_id=grantee_id, role=role, granted_by=granted_by, created_at=datetime.now(timezone.utc))
+        self._table.put_item(Item={
+            "PK": project_pk(project_id),
+            "SK": share_sk(grantee_id),
+            "grantee_id": grantee_id,
+            "role": share.role.value,
+            "granted_by": granted_by,
+            "created_at": share.created_at.isoformat(),
+            "GSI1PK": shared_index_key(grantee_id),
+            "GSI1SK": share.created_at.isoformat(),
+        })
+        return share
+
+    def get_share(self, project_id: str, grantee_id: str) -> Share | None:
+        """
+        Gets a project's share with one user.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            grantee_id: str - The user.
+
+        Returns:
+            Share | None - The share, or None if the project isn't shared with them.
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": share_sk(grantee_id)}).get("Item")
+        return _share_from_item(item) if item else None
+
+    def unshare_project(self, project_id: str, grantee_id: str) -> None:
+        """
+        Stops sharing a project with a user. Nothing happens if it wasn't shared with them.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            grantee_id: str - The user.
+        """
+        self._table.delete_item(Key={"PK": project_pk(project_id), "SK": share_sk(grantee_id)})
+
+    def list_shares(self, project_id: str) -> list[Share]:
+        """
+        Lists who a project is shared with.
+
+        Arguments:
+            project_id: str - Unique project ID.
+
+        Returns:
+            list[Share] - Its shares.
+        """
+        return [_share_from_item(item) for item in self._query(project_id, "SHARE#")]
+
+    def list_shared_with(self, user_id: str) -> list[tuple[Project, Share]]:
+        """
+        Lists the projects shared with a user, newest share first, through the projects index.
+
+        Arguments:
+            user_id: str - The user.
+
+        Returns:
+            list[tuple[Project,Share]] - Each project, with the share that reaches it.
+        """
+        items = []
+        query = {"IndexName": PROJECTS_INDEX, "KeyConditionExpression": Key("GSI1PK").eq(shared_index_key(user_id)), "ScanIndexForward": False}
+        while True:
+            response = self._table.query(**query)
+            items.extend(response["Items"])
+            if "LastEvaluatedKey" not in response:
+                break
+            query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        shared = []
+        for share in map(_share_from_item, items):
+            try:
+                shared.append((self.get_project(share.project_id), share))
+            except KeyError:
+                continue  # Deleted a moment ago, shares and all -- the index just hasn't caught up
+        return shared
+    
     def rename_project(self, project_id: str, name: str) -> Project:
         """
         Renames a project.
@@ -495,7 +638,7 @@ class StoryboardStore:
             slot: str - The facing (for a location) or orientation (otherwise) of the image, eg:- "north".
         """
         if isinstance(entry, Location):
-            field, value = "plates", entry.plates[slot]
+            field, value = "plates", entry.plates[slot].model_dump(mode="json")
         else:
             field, value = "references", entry.references[slot].model_dump(mode="json")
         try:
@@ -518,7 +661,81 @@ class StoryboardStore:
             model: type - Character, Prop or Location.
             entry_id: str - Unique ID of the entry.
         """
-        self._table.delete_item(Key={"PK": project_pk(project_id), "SK": registry_sk(model, entry_id)})
+        with self._table.batch_writer() as batch:
+            for item in self._query(project_id, sketch_sk(model, entry_id, "")):  # Its sketches go with it
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            batch.delete_item(Key={"PK": project_pk(project_id), "SK": registry_sk(model, entry_id)})
+
+    def clear_entry_image(self, project_id: str, entry: Character | Prop | Location, slot: str) -> None:
+        """
+        Removes one of an entry's images -- a plate or a reference -- and nothing else about it (see save_entry_image), so it's generated again when next needed.
+
+        Raises a KeyError if the entry doesn't exist.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            entry: Character|Prop|Location - The entry (only its type and ID are used).
+            slot: str - The facing (for a location) or orientation (otherwise) of the image.
+        """
+        try:
+            self._table.update_item(
+                Key={"PK": project_pk(project_id), "SK": registry_sk(type(entry), entry.id)},
+                UpdateExpression="REMOVE #field.#slot",
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#field": "plates" if isinstance(entry, Location) else "references", "#slot": slot},
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            raise KeyError(f"No {type(entry).__name__.lower()} {entry.id!r} in project {project_id!r}") from None
+
+    def get_sketch(self, project_id: str, model: type[Entry], entry_id: str, slot: str) -> Sketch:
+        """
+        Gets an entry's sketch for one slot.
+
+        Raises a KeyError if there is none.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            model: type - Character, Prop or Location.
+            entry_id: str - Unique ID of the entry.
+            slot: str - The orientation or facing.
+
+        Returns:
+            Sketch - The sketch.
+        """
+        item = self._table.get_item(Key={"PK": project_pk(project_id), "SK": sketch_sk(model, entry_id, slot)}).get("Item")
+        if item is None:
+            raise KeyError(f"No sketch for {model.__name__.lower()} {entry_id!r} ({slot})")
+        return Sketch.model_validate(_item_fields(item))
+
+    def save_sketch(self, project_id: str, model: type[Entry], sketch: Sketch) -> Sketch:
+        """
+        Saves a sketch: a new one (at version 0), or an edit -- but only if nobody has saved it since this copy was loaded, as for shots.
+
+        Raises a SketchConflictError if it has been saved (or, for a new one, created) since this copy was loaded.
+
+        Arguments:
+            project_id: str - Unique project ID.
+            model: type - Character, Prop or Location (its entry's registry).
+            sketch: Sketch - The sketch, carrying the version it was loaded at (0 for a new one).
+
+        Returns:
+            Sketch - The sketch as saved, with its version bumped by one.
+        """
+        saved = sketch.model_copy(update={"version": sketch.version + 1})
+        key = sketch_sk(model, sketch.entry_id, sketch.slot)
+        condition = (
+            {"ConditionExpression": "attribute_not_exists(PK)"} if sketch.version == 0
+            else {"ConditionExpression": "attribute_exists(PK) AND version = :loaded", "ExpressionAttributeValues": {":loaded": sketch.version}}
+        )
+        try:
+            self._table.put_item(Item={"PK": project_pk(project_id), "SK": key, **_to_dynamo(saved.model_dump(mode="json"))}, **condition)
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            try:
+                current = self.get_sketch(project_id, model, sketch.entry_id, sketch.slot).version
+            except KeyError:
+                current = 0  # Deleted meanwhile (with its entry)
+            raise SketchConflictError(key, current) from None
+        return saved
 
     def _entry_item(self, project_id: str, entry: Character | Prop | Location) -> dict:
         """
@@ -923,3 +1140,9 @@ def _job_from_item(item: dict) -> GenerationJob:
         GenerationJob - The job.
     """
     return GenerationJob.model_validate({**_item_fields(item), "id": item["SK"].removeprefix("JOB#")})
+
+
+class SketchConflictError(ShotConflictError):
+    """
+    Raised when a sketch is saved from an out-of-date copy -- answered as a shot's is, with a 409 and its current version.
+    """

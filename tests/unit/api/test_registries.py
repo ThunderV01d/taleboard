@@ -159,7 +159,7 @@ def test_editing_keeps_an_entrys_images(client, boards, pid):
 
     edited = client.patch(f"/projects/{pid}/characters/mara", json={"description": "New."}).json()
 
-    assert edited["references"] == {"left": {"image": f"projects/{pid}/refs/mara-left.png", "source": "sketch"}}
+    assert edited["references"] == {"left": {"image": f"projects/{pid}/refs/mara-left.png", "source": "sketch", "remove_background": True}}
 
 
 def test_an_invalid_edit_is_a_422_and_changes_nothing(client, pid):
@@ -185,7 +185,7 @@ def test_image_urls_are_given_for_the_projects_own_images_only(client, boards, p
     mara.references[Orientation.RIGHT] = Reference(image=foreign, source="generated")
     boards.save_entry(pid, mara)
     office = boards.get_entry(pid, Location, "office")
-    office.plates[Facing.NORTH] = f"projects/{pid}/plates/office-n.png"
+    office.plates[Facing.NORTH] = Reference(image=f"projects/{pid}/plates/office-n.png", source="generated")
     boards.save_entry(pid, office)
 
     urls = client.get(f"/projects/{pid}/characters/mara").json()["image_urls"]

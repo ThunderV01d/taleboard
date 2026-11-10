@@ -57,7 +57,8 @@ def story(client, boards):
     ])
     second = Shot(scene_id=scene.id, order=1, shot_size=ShotSize.WIDE)
     background = BackgroundLayer(id="bg2")
-    second.layers = [background.model_copy(update={"image": "x.png", "last_generated_params": background.current_params(second.generation_context(scene))})]
+    office = boards.get_entry(pid, Location, "office")
+    second.layers = [background.model_copy(update={"image": "x.png", "last_generated_params": background.current_params(second.generation_context(scene), office)})]
     boards.create_shot(pid, first)
     boards.create_shot(pid, second)
     return {"pid": pid, "scene": scene.id, "first": first.id, "second": second.id}

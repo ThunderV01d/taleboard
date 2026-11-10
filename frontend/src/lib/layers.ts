@@ -1,11 +1,11 @@
 /**
- * A shot's layer graph: building layers, walking and editing the tree, and the transform maths.
+ * A shot's (or sketch's) layer graph: building layers, walking and editing the tree, and the transform maths.
  *
  * Everything here is pure -- it takes a layer list and returns a new one -- so the canvas editor can keep every
  * version for undo, and the functions can be unit-tested (layers.test.ts).
  *
- * Coordinates: a layer's transform places its *centre*, in its parent's space. At the top level that's the
- * 1024-pixel frame; inside a group it's relative to the group's own centre, which is the group's pivot. Rotation and
+ * Coordinates: a layer's transform places its *centre*, in its parent's space. At the top level that's the frame (a
+ * shot's is 1024 pixels square); inside a group it's relative to the group's own centre, which is the group's pivot. Rotation and
  * skew are in degrees, as the backend stores them.
  */
 import type { components } from "@/api/schema"
@@ -21,6 +21,11 @@ export type TextLayer = Extract<Layer, { type: "text" }>
 /** Shots are drawn on a square frame of this many pixels a side (matches the backend's FRAME_SIZE) */
 export const FRAME_SIZE = 1024
 
+/** A frame's size, in pixels: a shot's is square; a sketch's is the shape of the image it stands in for */
+export type Frame = { width: number; height: number }
+
+export const SHOT_FRAME: Frame = { width: FRAME_SIZE, height: FRAME_SIZE }
+
 /** A new layer's ID, in the same form the backend makes them (32 hex characters) */
 export function newId(): string {
   return crypto.randomUUID().replaceAll("-", "")
@@ -30,7 +35,15 @@ export function newId(): string {
  * A transform that leaves a layer unrotated and unskewed -- centred on (x, y), at the given scale (default 1).
  */
 export function placedAt(x: number, y: number, scale = 1): Transform {
-  return { x, y, scale_x: scale, scale_y: scale, rotation: 0, skew_x: 0, skew_y: 0 }
+  return {
+    x,
+    y,
+    scale_x: scale,
+    scale_y: scale,
+    rotation: 0,
+    skew_x: 0,
+    skew_y: 0,
+  }
 }
 
 const CENTRE = FRAME_SIZE / 2
@@ -73,13 +86,28 @@ export function newBackgroundLayer(): Layer {
 /**
  * An empty group, centred on the frame (layers dragged into it keep their place on the canvas).
  */
-export function newGroupLayer(): GroupLayer {
-  return { ...base("Group"), type: "group", children: [] }
+export function newGroupLayer(frame = SHOT_FRAME): GroupLayer {
+  return {
+    ...base("Group", frame.width / 2, frame.height / 2),
+    type: "group",
+    children: [],
+  }
 }
 
-export function newTextLayer(): TextLayer {
+/**
+ * An empty drawing, centred on the frame -- the brush adds strokes to it (and makes one, if no drawing is selected).
+ */
+export function newFreehandLayer(frame = SHOT_FRAME): Layer {
   return {
-    ...base("Text", CENTRE, FRAME_SIZE * 0.85),
+    ...base("Drawing", frame.width / 2, frame.height / 2),
+    type: "freehand",
+    strokes: [],
+  }
+}
+
+export function newTextLayer(frame = SHOT_FRAME): TextLayer {
+  return {
+    ...base("Text", frame.width / 2, frame.height * 0.85),
     type: "text",
     text: "Caption",
     font: "sans",
@@ -89,8 +117,17 @@ export function newTextLayer(): TextLayer {
   }
 }
 
-export function newImageLayer(image: string | null, name = "Image"): Layer {
-  return { ...base(name), type: "image", image, corners: null }
+export function newImageLayer(
+  image: string | null,
+  name = "Image",
+  frame = SHOT_FRAME
+): Layer {
+  return {
+    ...base(name, frame.width / 2, frame.height / 2),
+    type: "image",
+    image,
+    corners: null,
+  }
 }
 
 export function newCharacterLayer(

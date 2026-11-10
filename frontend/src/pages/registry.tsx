@@ -1,6 +1,6 @@
 import { ArrowLeftIcon, PlusIcon } from "lucide-react"
 import { useState } from "react"
-import { Link, useParams } from "react-router"
+import { Link, useParams, useSearchParams } from "react-router"
 
 import { EntryDeleteDialog } from "@/components/registry/entry-delete-dialog"
 import { EntryEditor } from "@/components/registry/entry-editor"
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { FACING_LABELS, ORIENTATION_LABELS } from "@/lib/labels"
-import { useProject } from "@/lib/projects"
+import { canEdit, useProject } from "@/lib/projects"
 import {
   entryImages,
   isRegistryKind,
@@ -39,6 +39,9 @@ type Mode = { kind: "grid" } | { kind: "entry"; entryId: string | null }
 /**
  * A registry's entries as a grid. Opening one (or "New") switches the page to that entry -- a mode, not a new page,
  * as the spec has it. What an entry looks like is edited here; where it stands in a shot is edited in the editor.
+ *
+ * The open entry lives in the address (?entry=... or ?new), so a refresh -- or coming back from its drawing pad --
+ * opens it again.
  */
 function RegistryView({
   projectId,
@@ -49,14 +52,29 @@ function RegistryView({
 }) {
   const project = useProject(projectId)
   const entries = useRegistry(projectId, kind)
-  const [mode, setMode] = useState<Mode>({ kind: "grid" })
+  const [search, setSearch] = useSearchParams()
   const [deleting, setDeleting] = useState<Entry | null>(null)
   const names = REGISTRY_NAMES[kind]
 
-  const open =
-    mode.kind === "entry" && mode.entryId
-      ? entries.data?.find((entry) => entry.id === mode.entryId)
-      : undefined
+  const opened = search.get("entry")
+  const open = opened
+    ? entries.data?.find((entry) => entry.id === opened)
+    : undefined
+  // An entry that isn't there (deleted, or a stale link) shows the grid
+  const mode: Mode = search.has("new")
+    ? { kind: "entry", entryId: null }
+    : open
+      ? { kind: "entry", entryId: open.id }
+      : { kind: "grid" }
+  const setMode = (next: Mode, options?: { replace: boolean }) =>
+    setSearch(
+      next.kind === "grid"
+        ? {}
+        : next.entryId
+          ? { entry: next.entryId }
+          : { new: "" },
+      options
+    )
 
   return (
     <section className="space-y-6">
@@ -75,7 +93,7 @@ function RegistryView({
               : names.many}
           </h1>
         </div>
-        {mode.kind === "grid" && (
+        {mode.kind === "grid" && canEdit(project.data) && (
           <Button onClick={() => setMode({ kind: "entry", entryId: null })}>
             <PlusIcon />
             New {names.one}
@@ -101,9 +119,12 @@ function RegistryView({
           projectId={projectId}
           kind={kind}
           entry={open}
-          onSaved={(saved) => setMode({ kind: "entry", entryId: saved.id })}
+          onSaved={(saved) =>
+            setMode({ kind: "entry", entryId: saved.id }, { replace: true })
+          }
           onBack={() => setMode({ kind: "grid" })}
           onDelete={setDeleting}
+          readOnly={!canEdit(project.data)}
         />
       ) : entries.data.length === 0 ? (
         <p className="rounded-xl border border-dashed py-16 text-center text-muted-foreground">

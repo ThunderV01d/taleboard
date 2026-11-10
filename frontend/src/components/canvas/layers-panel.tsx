@@ -15,6 +15,7 @@ import {
   ImageIcon,
   MountainIcon,
   PackageIcon,
+  PenLineIcon,
   PlusIcon,
   Trash2Icon,
   TypeIcon,
@@ -42,6 +43,7 @@ import {
   type LayerType,
 } from "@/lib/layers"
 import type { Character, Prop } from "@/lib/registries"
+import { changesText, freshness } from "@/lib/staleness"
 import { cn } from "@/lib/utils"
 
 const ICONS: Record<LayerType, typeof UserIcon> = {
@@ -50,6 +52,7 @@ const ICONS: Record<LayerType, typeof UserIcon> = {
   prop: PackageIcon,
   text: TypeIcon,
   image: ImageIcon,
+  freehand: PenLineIcon,
   group: FolderIcon,
 }
 
@@ -57,20 +60,24 @@ const ICONS: Record<LayerType, typeof UserIcon> = {
 type Drop = { targetId: string; zone: DropZone } | null
 
 /**
- * The shot's layers as a tree, top of the stack first (as image editors list them).
+ * The shot's (or sketch's) layers as a tree, top of the stack first (as image editors list them).
  *
  * Click a row to select it (shift- or ctrl-click to add to the selection). Drag a row by its grip:
  * - onto the top or bottom edge of another row to put it in front of or behind that layer (in that layer's group);
  * - onto the middle of a group to put it inside, on top;
  * - onto the middle of any other layer to make a new group of the two.
  *
- * A layer keeps its place on the canvas wherever it's dragged to in the tree.
+ * A layer keeps its place on the canvas wherever it's dragged to in the tree. A generated layer whose picture is out of
+ * date has an amber dot; one not drawn yet, a hollow one.
  */
 export function LayersPanel({
   layers,
   selection,
   characters,
   props,
+  registryLayers = true,
+  outOfDate = {},
+  readOnly = false,
   canAddBackground,
   onSelect,
   onToggleVisible,
@@ -80,6 +87,7 @@ export function LayersPanel({
   onAddText,
   onAddImage,
   onAddGroup,
+  onAddDrawing,
   onAddCharacter,
   onAddProp,
 }: {
@@ -87,6 +95,12 @@ export function LayersPanel({
   selection: string[]
   characters: Character[]
   props: Prop[]
+  /** Whether background, character and prop layers can be added (a shot's can; a sketch's can't). Defaults to true */
+  registryLayers?: boolean
+  /** The shot's out-of-date layers (as last saved), with what changed -- for the markers */
+  outOfDate?: Record<string, string[]>
+  /** Picking layers only -- no adding, deleting, dragging or hiding (a project shared to view) */
+  readOnly?: boolean
   /** False while the shot already has its one background */
   canAddBackground: boolean
   onSelect: (ids: string[]) => void
@@ -97,6 +111,7 @@ export function LayersPanel({
   onAddText: () => void
   onAddImage: (file: File) => void
   onAddGroup: () => void
+  onAddDrawing: () => void
   onAddCharacter: (character: Character) => void
   onAddProp: (prop: Prop) => void
 }) {
@@ -150,65 +165,77 @@ export function LayersPanel({
             }
           }}
         />
-        <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Delete (Del)"
-            aria-label="Delete the selected layers"
-            disabled={selection.length === 0}
-            onClick={onDelete}
-          >
-            <Trash2Icon />
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
-                <PlusIcon />
-                Add
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                disabled={!canAddBackground}
-                onSelect={onAddBackground}
-              >
-                <MountainIcon />
-                Background
-                {!canAddBackground && (
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    (has one)
-                  </span>
+        {!readOnly && (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              title="Delete (Del)"
+              aria-label="Delete the selected layers"
+              disabled={selection.length === 0}
+              onClick={onDelete}
+            >
+              <Trash2Icon />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <PlusIcon />
+                  Add
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {registryLayers && (
+                  <DropdownMenuItem
+                    disabled={!canAddBackground}
+                    onSelect={onAddBackground}
+                  >
+                    <MountainIcon />
+                    Background
+                    {!canAddBackground && (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        (has one)
+                      </span>
+                    )}
+                  </DropdownMenuItem>
                 )}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onAddText}>
-                <TypeIcon />
-                Text
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => file.current?.click()}>
-                <ImageIcon />
-                Image (upload)
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onAddGroup}>
-                <FolderIcon />
-                Group (empty)
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <RegistrySubmenu
-                label="Character"
-                icon={UserIcon}
-                entries={characters}
-                onPick={onAddCharacter}
-              />
-              <RegistrySubmenu
-                label="Prop"
-                icon={PackageIcon}
-                entries={props}
-                onPick={onAddProp}
-              />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+                <DropdownMenuItem onSelect={onAddText}>
+                  <TypeIcon />
+                  Text
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => file.current?.click()}>
+                  <ImageIcon />
+                  Image (upload)
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onAddDrawing}>
+                  <PenLineIcon />
+                  Drawing (empty)
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onAddGroup}>
+                  <FolderIcon />
+                  Group (empty)
+                </DropdownMenuItem>
+                {registryLayers && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <RegistrySubmenu
+                      label="Character"
+                      icon={UserIcon}
+                      entries={characters}
+                      onPick={onAddCharacter}
+                    />
+                    <RegistrySubmenu
+                      label="Prop"
+                      icon={PackageIcon}
+                      entries={props}
+                      onPick={onAddProp}
+                    />
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
       </div>
 
       {layers.length === 0 ? (
@@ -232,6 +259,8 @@ export function LayersPanel({
               layers={layers}
               depth={0}
               selection={selection}
+              outOfDate={outOfDate}
+              readOnly={readOnly}
               drop={drop}
               onPick={pick}
               onToggleVisible={onToggleVisible}
@@ -239,10 +268,12 @@ export function LayersPanel({
           </ul>
         </DndContext>
       )}
-      <p className="text-xs text-muted-foreground">
-        Drag by the grip: onto a row's edge to reorder, onto its middle to
-        group.
-      </p>
+      {!readOnly && (
+        <p className="text-xs text-muted-foreground">
+          Drag by the grip: onto a row's edge to reorder, onto its middle to
+          group.
+        </p>
+      )}
     </div>
   )
 }
@@ -254,6 +285,8 @@ function LayerRows({
   layers,
   depth,
   selection,
+  outOfDate,
+  readOnly,
   drop,
   onPick,
   onToggleVisible,
@@ -261,6 +294,8 @@ function LayerRows({
   layers: Layer[]
   depth: number
   selection: string[]
+  outOfDate: Record<string, string[]>
+  readOnly: boolean
   drop: Drop
   onPick: (id: string, additive: boolean) => void
   onToggleVisible: (id: string) => void
@@ -275,6 +310,8 @@ function LayerRows({
         layer={layer}
         depth={depth}
         selected={selection.includes(layer.id)}
+        outOfDate={outOfDate}
+        readOnly={readOnly}
         zone={drop?.targetId === layer.id ? drop.zone : null}
         onPick={onPick}
         onToggleVisible={onToggleVisible}
@@ -285,6 +322,8 @@ function LayerRows({
             layers={layer.children}
             depth={depth + 1}
             selection={selection}
+            outOfDate={outOfDate}
+            readOnly={readOnly}
             drop={drop}
             onPick={onPick}
             onToggleVisible={onToggleVisible}
@@ -303,6 +342,8 @@ function LayerRow({
   layer,
   depth,
   selected,
+  outOfDate,
+  readOnly,
   zone,
   onPick,
   onToggleVisible,
@@ -310,6 +351,8 @@ function LayerRow({
   layer: Layer
   depth: number
   selected: boolean
+  outOfDate: Record<string, string[]>
+  readOnly: boolean
   zone: DropZone | null
   onPick: (id: string, additive: boolean) => void
   onToggleVisible: (id: string) => void
@@ -320,9 +363,10 @@ function LayerRow({
     setNodeRef: setDragRef,
     setActivatorNodeRef,
     isDragging,
-  } = useDraggable({ id: layer.id })
+  } = useDraggable({ id: layer.id, disabled: readOnly })
   const { setNodeRef: setDropRef } = useDroppable({ id: layer.id })
   const Icon = ICONS[layer.type]
+  const picture = freshness(layer, outOfDate)
 
   return (
     <div
@@ -343,6 +387,7 @@ function LayerRow({
       <button
         ref={setActivatorNodeRef}
         type="button"
+        hidden={readOnly}
         aria-label={`Drag ${layer.name || LAYER_TYPE_LABELS[layer.type]}`}
         className="shrink-0 cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:text-foreground active:cursor-grabbing"
         {...attributes}
@@ -364,9 +409,26 @@ function LayerRow({
           {layer.name || LAYER_TYPE_LABELS[layer.type]}
         </span>
       </button>
+      {picture?.state === "stale" && (
+        <span
+          role="img"
+          aria-label="Out of date"
+          title={`Out of date: ${changesText(picture.changes)} changed since it was drawn`}
+          className="size-2 shrink-0 rounded-full bg-amber-500"
+        />
+      )}
+      {picture?.state === "undrawn" && (
+        <span
+          role="img"
+          aria-label="Not drawn yet"
+          title="Not drawn yet"
+          className="size-2 shrink-0 rounded-full border border-muted-foreground"
+        />
+      )}
       <button
         className="rounded p-1 text-muted-foreground hover:text-foreground"
         aria-label={layer.visible ? "Hide" : "Show"}
+        disabled={readOnly}
         onClick={() => onToggleVisible(layer.id)}
       >
         {layer.visible ? (

@@ -120,7 +120,10 @@ TIME_OF_DAY_PHRASES: dict[Setting, dict[TimeOfDay, str]] = {
         TimeOfDay.DAWN: "at dawn, low pale light from one side, long soft shadows drawn with light hatching, ",
         TimeOfDay.DAY: "",
         TimeOfDay.DUSK: "at dusk, fading warm light, long shadows drawn with hatching, ",
-        TimeOfDay.NIGHT: "at night, dim light, everything in deep cross-hatched shadow, ",
+        TimeOfDay.NIGHT: (
+            "at night: lit only by its own lights, all switched on and as bright as they make the place, "
+            "black night showing through anything that looks outside, cross-hatched shadow only where its lights do not reach, "
+        ),
     },
     Setting.EXT: {
         TimeOfDay.DAWN: "at dawn, a pale sky low on one side, long soft shadows drawn with light hatching, ",

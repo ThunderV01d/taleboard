@@ -5,7 +5,14 @@ import {
   SparklesIcon,
   UsersIcon,
 } from "lucide-react"
-import { lazy, Suspense, useState, type ReactNode } from "react"
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 import { Link, useParams, useSearchParams } from "react-router"
 
 import { DeleteDialog } from "@/components/delete-dialog"
@@ -27,7 +34,8 @@ import {
   useJobs,
   type GenerationJob,
 } from "@/lib/generation"
-import { useProject } from "@/lib/projects"
+import { readLastShot, writeLastShot } from "@/lib/last-shot"
+import { canEdit, useProject } from "@/lib/projects"
 import { useCharacters, useLocations, useProps } from "@/lib/registries"
 import {
   useDeleteScene,
@@ -64,7 +72,12 @@ type Panel =
  * canvas editor in the middle (layers on the left, details on the right), and the scene's shot deck along the bottom.
  *
  * The selected scene and shot live in the address (?scene=...&shot=...), so a refresh or a shared link opens the same
- * place. Panels don't -- closing one, or reloading, just returns to the editor.
+ * place; with none named -- coming back from a registry, say -- it opens the scene and shot last open here. Panels
+ * don't -- closing one, or reloading, just returns to the editor.
+ *
+ * A project shared with the user to view (the guest's examples, say) opens read-only: scenes and shots can be opened
+ * and looked through, but nothing can be added, moved, edited, deleted or generated. The API refuses all of that
+ * anyway -- this just doesn't offer it.
  */
 export function ProjectEditorPage() {
   const { projectId = "" } = useParams()
@@ -86,17 +99,31 @@ export function ProjectEditorPage() {
   const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null)
   const close = () => setPanel(null)
 
-  // The selection falls back to the first scene and shot when the address names none (or one that's gone)
+  // The selection is the scene and shot the address names -- or with none named, the ones last open here -- falling
+  // back to the first scene and shot (if those have gone, too)
+  const remembered = useMemo(() => readLastShot(projectId), [projectId])
+  const named = search.has("scene")
+  const wantedScene = named ? search.get("scene") : remembered?.scene
+  const wantedShot = named ? search.get("shot") : (remembered?.shot ?? null)
   const sceneList = scenes.data ?? []
   const scene =
-    sceneList.find((s) => s.id === search.get("scene")) ?? sceneList[0] ?? null
+    sceneList.find((s) => s.id === wantedScene) ?? sceneList[0] ?? null
   const shots = useShots(projectId, scene?.id ?? null)
   const shotList = shots.data ?? []
   const shotIndex = Math.max(
     0,
-    shotList.findIndex((s) => s.id === search.get("shot"))
+    shotList.findIndex((s) => s.id === wantedShot)
   )
   const shot = shotList[shotIndex] ?? null
+
+  // Remember where the editor is, once its shots have loaded (until then, the shot isn't known)
+  const sceneId = scene?.id ?? null
+  const shotId = shots.data ? (shot?.id ?? null) : undefined
+  useEffect(() => {
+    if (sceneId && shotId !== undefined) {
+      writeLastShot(projectId, { scene: sceneId, shot: shotId })
+    }
+  }, [projectId, sceneId, shotId])
   const reorderScenes = useReorderScenes(projectId)
   const reorderShots = useReorderShots(projectId, scene?.id ?? "")
   const reorderError = reorderScenes.error ?? reorderShots.error
@@ -105,6 +132,8 @@ export function ProjectEditorPage() {
     setSearch(shotId ? { scene: sceneId, shot: shotId } : { scene: sceneId }, {
       replace: true,
     })
+
+  const readOnly = !canEdit(project.data)
 
   if (project.isPending || scenes.isPending) {
     return <Skeleton className="h-96 w-full" />
@@ -141,20 +170,23 @@ export function ProjectEditorPage() {
           onNew={() => setPanel({ kind: "newScene" })}
           onEdit={(s) => setPanel({ kind: "editScene", scene: s })}
           onDelete={(s) => setPanel({ kind: "deleteScene", scene: s })}
+          readOnly={readOnly}
         />
         <div className="flex justify-end gap-2">
-          <Button
-            size="sm"
-            title="Draw every layer in the project that isn't drawn yet, or has changed since"
-            onClick={() => setPanel({ kind: "generateAll" })}
-          >
-            {drawing.size > 0 ? (
-              <LoaderCircleIcon className="animate-spin" />
-            ) : (
-              <SparklesIcon />
-            )}
-            Generate everything
-          </Button>
+          {!readOnly && (
+            <Button
+              size="sm"
+              title="Draw every layer in the project that isn't drawn yet, or has changed since"
+              onClick={() => setPanel({ kind: "generateAll" })}
+            >
+              {drawing.size > 0 ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <SparklesIcon />
+              )}
+              Generate everything
+            </Button>
+          )}
           <Button variant="outline" size="sm" asChild>
             <Link to={`/projects/${projectId}/characters`}>
               <UsersIcon />
@@ -189,7 +221,11 @@ export function ProjectEditorPage() {
         ) : lastImport?.status === "failed" ? (
           <ImportFailed job={lastImport} />
         ) : (
-          <EmptyState>Add a scene to start laying out shots.</EmptyState>
+          <EmptyState>
+            {readOnly
+              ? "This project has no scenes yet."
+              : "Add a scene to start laying out shots."}
+          </EmptyState>
         )
       ) : shots.isPending ? (
         <Skeleton className="m-4 flex-1" />
@@ -208,11 +244,14 @@ export function ProjectEditorPage() {
             progress={progress}
             drawing={drawing.has(shot.id)}
             onGenerate={(target) => generate.mutateAsync(target)}
+            readOnly={readOnly}
           />
         </Suspense>
       ) : (
         <EmptyState>
-          This scene has no shots yet -- add one from the deck below.
+          {readOnly
+            ? "This scene has no shots yet."
+            : "This scene has no shots yet -- add one from the deck below."}
         </EmptyState>
       )}
 
@@ -221,6 +260,7 @@ export function ProjectEditorPage() {
           <ShotDeck
             shots={shotList}
             drawing={drawing}
+            readOnly={readOnly}
             selectedId={shot?.id ?? null}
             onSelect={(s) => select(scene.id, s.id)}
             onNew={() => setPanel({ kind: "newShot" })}

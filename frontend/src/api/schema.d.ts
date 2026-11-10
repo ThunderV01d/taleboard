@@ -13,14 +13,14 @@ export interface paths {
         };
         /**
          * List Projects
-         * @description Lists the signed-in user's projects, newest first.
+         * @description Lists the signed-in user's own projects, newest first, then the projects shared with them, most recently shared first.
          *
          *     Arguments:
          *         user_id: str - The signed-in user.
          *         boards: StoryboardStore - Store to read from.
          *
          *     Returns:
-         *         list[Project] - Every project.
+         *         list[ProjectOut] - Every project they can open, each with their access to it.
          */
         get: operations["list_projects_projects_get"];
         put?: never;
@@ -34,7 +34,7 @@ export interface paths {
          *         boards: StoryboardStore - Store to write to.
          *
          *     Returns:
-         *         Project - The new project.
+         *         ProjectOut - The new project.
          */
         post: operations["create_project_projects_post"];
         delete?: never;
@@ -55,20 +55,20 @@ export interface paths {
          * @description Gets one project.
          *
          *     Arguments:
-         *         project: Project - The project the path names (a 404 if it doesn't exist).
+         *         access: ProjectAccess - The project the path names (a 404 if it doesn't exist, or isn't theirs or shared with them), and their access to it.
          *
          *     Returns:
-         *         Project - The project.
+         *         ProjectOut - The project.
          */
         get: operations["read_project_projects__project_id__get"];
         put?: never;
         post?: never;
         /**
          * Delete Project
-         * @description Deletes a project and everything in it -- its registries, scenes, shots and images. It can't be undone.
+         * @description Deletes a project and everything in it -- its registries, scenes, shots, images and shares. It can't be undone, so only its owner can.
          *
          *     Arguments:
-         *         project: Project - The project the path names (a 404 if it doesn't exist).
+         *         project: Project - The project the path names (a 404 if it doesn't exist, or isn't theirs or shared with them; a 403 unless it's theirs).
          *         boards: StoryboardStore - Store to delete from.
          *
          *     Returns:
@@ -83,11 +83,11 @@ export interface paths {
          *
          *     Arguments:
          *         body: ProjectIn - The project's new name.
-         *         project: Project - The project the path names (a 404 if it doesn't exist).
+         *         access: ProjectAccess - The project the path names (a 404 if it doesn't exist, or isn't theirs or shared with them), and their access to it (at least editor).
          *         boards: StoryboardStore - Store to write to.
          *
          *     Returns:
-         *         Project - The renamed project.
+         *         ProjectOut - The renamed project.
          */
         patch: operations["rename_project_projects__project_id__patch"];
         trace?: never;
@@ -142,6 +142,54 @@ export interface paths {
          * @description Changes the fields sent, keeping everything else -- its ID and images included.
          */
         patch: operations["edit_entry_projects__project_id__characters__entry_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/characters/{entry_id}/sketches/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Sketch
+         * @description Gets the entry's sketch for one slot -- a 404 if it has none.
+         */
+        get: operations["read_sketch_projects__project_id__characters__entry_id__sketches__slot__get"];
+        /**
+         * Save Sketch
+         * @description Saves the entry's sketch for one slot (creating it at version 0) -- refused with a 409 if it has been saved since the version sent.
+         */
+        put: operations["save_sketch_projects__project_id__characters__entry_id__sketches__slot__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/characters/{entry_id}/sketches/{slot}/use": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Use Sketch
+         * @description Makes a flattened sketch (one of this project's uploads) the slot's image -- every layer drawn from it is then out of date.
+         */
+        put: operations["use_sketch_projects__project_id__characters__entry_id__sketches__slot__use_put"];
+        post?: never;
+        /**
+         * Stop Using Sketch
+         * @description Goes back to a generated image for the slot (drawn when it's next needed; the sketch itself is kept). Nothing changes if it isn't using a sketch.
+         */
+        delete: operations["stop_using_sketch_projects__project_id__characters__entry_id__sketches__slot__use_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/projects/{project_id}/characters/{entry_id}/usage": {
@@ -216,6 +264,54 @@ export interface paths {
         patch: operations["edit_entry_projects__project_id__props__entry_id__patch"];
         trace?: never;
     };
+    "/projects/{project_id}/props/{entry_id}/sketches/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Sketch
+         * @description Gets the entry's sketch for one slot -- a 404 if it has none.
+         */
+        get: operations["read_sketch_projects__project_id__props__entry_id__sketches__slot__get"];
+        /**
+         * Save Sketch
+         * @description Saves the entry's sketch for one slot (creating it at version 0) -- refused with a 409 if it has been saved since the version sent.
+         */
+        put: operations["save_sketch_projects__project_id__props__entry_id__sketches__slot__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/props/{entry_id}/sketches/{slot}/use": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Use Sketch
+         * @description Makes a flattened sketch (one of this project's uploads) the slot's image -- every layer drawn from it is then out of date.
+         */
+        put: operations["use_sketch_projects__project_id__props__entry_id__sketches__slot__use_put"];
+        post?: never;
+        /**
+         * Stop Using Sketch
+         * @description Goes back to a generated image for the slot (drawn when it's next needed; the sketch itself is kept). Nothing changes if it isn't using a sketch.
+         */
+        delete: operations["stop_using_sketch_projects__project_id__props__entry_id__sketches__slot__use_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{project_id}/props/{entry_id}/usage": {
         parameters: {
             query?: never;
@@ -286,6 +382,54 @@ export interface paths {
          * @description Changes the fields sent, keeping everything else -- its ID and images included.
          */
         patch: operations["edit_entry_projects__project_id__locations__entry_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/locations/{entry_id}/sketches/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Sketch
+         * @description Gets the entry's sketch for one slot -- a 404 if it has none.
+         */
+        get: operations["read_sketch_projects__project_id__locations__entry_id__sketches__slot__get"];
+        /**
+         * Save Sketch
+         * @description Saves the entry's sketch for one slot (creating it at version 0) -- refused with a 409 if it has been saved since the version sent.
+         */
+        put: operations["save_sketch_projects__project_id__locations__entry_id__sketches__slot__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/locations/{entry_id}/sketches/{slot}/use": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Use Sketch
+         * @description Makes a flattened sketch (one of this project's uploads) the slot's image -- every layer drawn from it is then out of date.
+         */
+        put: operations["use_sketch_projects__project_id__locations__entry_id__sketches__slot__use_put"];
+        post?: never;
+        /**
+         * Stop Using Sketch
+         * @description Goes back to a generated image for the slot (drawn when it's next needed; the sketch itself is kept). Nothing changes if it isn't using a sketch.
+         */
+        delete: operations["stop_using_sketch_projects__project_id__locations__entry_id__sketches__slot__use_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/projects/{project_id}/locations/{entry_id}/usage": {
@@ -572,6 +716,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Shares
+         * @description Lists who the project is shared with.
+         */
+        get: operations["list_shares_projects__project_id__shares_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/shares/{grantee_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Share Project
+         * @description Shares the project with a user (by their user ID), or changes their role if it's already shared with them.
+         */
+        put: operations["share_project_projects__project_id__shares__grantee_id__put"];
+        post?: never;
+        /**
+         * Unshare Project
+         * @description Stops sharing the project with a user. Nothing happens if it wasn't shared with them.
+         */
+        delete: operations["unshare_project_projects__project_id__shares__grantee_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -620,7 +808,7 @@ export interface components {
             type: "background";
             /** @default north */
             facing: components["schemas"]["Facing"];
-            last_generated_params?: components["schemas"]["BackgroundParams"] | null;
+            last_generated_params?: components["schemas"]["BackgroundParams-Input"] | null;
         };
         /**
          * BackgroundLayer
@@ -660,13 +848,15 @@ export interface components {
             type: "background";
             /** @default north */
             facing: components["schemas"]["Facing"];
-            last_generated_params: components["schemas"]["BackgroundParams"] | null;
+            last_generated_params: components["schemas"]["BackgroundParams-Output"] | null;
         };
         /**
          * BackgroundParams
-         * @description Everything a background's image was generated from.
+         * @description Everything a background's image was generated from: its own facing, the shot's and scene's values, and what its location said about the sides it was drawn from (this facing's, and north's, which every other side is drawn from).
+         *
+         *     The location's fields default to empty, so params recorded before they were (which then never match) still load -- and mark the layer to be drawn again, which finds its unchanged images by their keys for free.
          */
-        BackgroundParams: {
+        "BackgroundParams-Input": {
             /** Location Id */
             location_id: string;
             facing: components["schemas"]["Facing"];
@@ -676,6 +866,63 @@ export interface components {
             details: string;
             time_of_day: components["schemas"]["TimeOfDay"];
             atmosphere: components["schemas"]["Atmosphere"];
+            /**
+             * Location Description
+             * @default
+             */
+            location_description: string;
+            setting?: components["schemas"]["Setting"] | null;
+            /**
+             * View
+             * @default
+             */
+            view: string;
+            /**
+             * North View
+             * @default
+             */
+            north_view: string;
+            /** Sketches */
+            sketches?: {
+                [key: string]: components["schemas"]["SketchUsed-Input"];
+            };
+        };
+        /**
+         * BackgroundParams
+         * @description Everything a background's image was generated from: its own facing, the shot's and scene's values, and what its location said about the sides it was drawn from (this facing's, and north's, which every other side is drawn from).
+         *
+         *     The location's fields default to empty, so params recorded before they were (which then never match) still load -- and mark the layer to be drawn again, which finds its unchanged images by their keys for free.
+         */
+        "BackgroundParams-Output": {
+            /** Location Id */
+            location_id: string;
+            facing: components["schemas"]["Facing"];
+            shot_size: components["schemas"]["ShotSize"];
+            angle: components["schemas"]["CameraAngle"];
+            /** Details */
+            details: string;
+            time_of_day: components["schemas"]["TimeOfDay"];
+            atmosphere: components["schemas"]["Atmosphere"];
+            /**
+             * Location Description
+             * @default
+             */
+            location_description: string;
+            setting: components["schemas"]["Setting"] | null;
+            /**
+             * View
+             * @default
+             */
+            view: string;
+            /**
+             * North View
+             * @default
+             */
+            north_view: string;
+            /** Sketches */
+            sketches: {
+                [key: string]: components["schemas"]["SketchUsed-Output"];
+            };
         };
         /**
          * CameraAngle
@@ -748,7 +995,7 @@ export interface components {
              * @default
              */
             action: string;
-            last_generated_params?: components["schemas"]["CharacterParams"] | null;
+            last_generated_params?: components["schemas"]["CharacterParams-Input"] | null;
         };
         /**
          * CharacterLayer
@@ -797,7 +1044,7 @@ export interface components {
              * @default
              */
             action: string;
-            last_generated_params: components["schemas"]["CharacterParams"] | null;
+            last_generated_params: components["schemas"]["CharacterParams-Output"] | null;
         };
         /**
          * CharacterOut
@@ -829,12 +1076,39 @@ export interface components {
         };
         /**
          * CharacterParams
-         * @description Everything a character layer's image was generated from (besides the character's own registry entry).
+         * @description Everything a character layer's image was generated from: its own orientation and action, and what the character's registry entry said -- their description, and any sketch they're drawn from (the front one, which every other orientation is drawn from, and this orientation's).
          */
-        CharacterParams: {
+        "CharacterParams-Input": {
             orientation: components["schemas"]["Orientation"];
             /** Action */
             action: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Sketches */
+            sketches?: {
+                [key: string]: components["schemas"]["SketchUsed-Input"];
+            };
+        };
+        /**
+         * CharacterParams
+         * @description Everything a character layer's image was generated from: its own orientation and action, and what the character's registry entry said -- their description, and any sketch they're drawn from (the front one, which every other orientation is drawn from, and this orientation's).
+         */
+        "CharacterParams-Output": {
+            orientation: components["schemas"]["Orientation"];
+            /** Action */
+            action: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Sketches */
+            sketches: {
+                [key: string]: components["schemas"]["SketchUsed-Output"];
+            };
         };
         /**
          * CharacterPatch
@@ -924,6 +1198,76 @@ export interface components {
          * @enum {string}
          */
         Facing: "north" | "east" | "south" | "west";
+        /**
+         * FreehandLayer
+         * @description Freehand drawing, kept as vector strokes (each one undoable, and editable without losing the rest) rather than pixels -- drawn in order, so an erasing stroke takes out the strokes before it.
+         *
+         *     Attributes:
+         *         type: Literal["freehand"] - Layer type.
+         *         strokes: list[Stroke] - The strokes, in the order they were drawn. Defaults to [].
+         */
+        "FreehandLayer-Input": {
+            /** Id */
+            id?: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform?: components["schemas"]["Transform-Input"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "freehand";
+            /** Strokes */
+            strokes?: components["schemas"]["Stroke-Input"][];
+        };
+        /**
+         * FreehandLayer
+         * @description Freehand drawing, kept as vector strokes (each one undoable, and editable without losing the rest) rather than pixels -- drawn in order, so an erasing stroke takes out the strokes before it.
+         *
+         *     Attributes:
+         *         type: Literal["freehand"] - Layer type.
+         *         strokes: list[Stroke] - The strokes, in the order they were drawn. Defaults to [].
+         */
+        "FreehandLayer-Output": {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            transform: components["schemas"]["Transform-Output"];
+            /**
+             * Opacity
+             * @default 1
+             */
+            opacity: number;
+            /**
+             * Visible
+             * @default true
+             */
+            visible: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "freehand";
+            /** Strokes */
+            strokes: components["schemas"]["Stroke-Output"][];
+        };
         /**
          * GenerateIn
          * @description Request body naming what to draw: leave everything out for the whole project, or narrow it to a scene, a shot in it, or one layer of that shot.
@@ -1046,7 +1390,7 @@ export interface components {
              */
             type: "group";
             /** Children */
-            children?: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
+            children?: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["FreehandLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
         };
         /**
          * GroupLayer
@@ -1083,7 +1427,7 @@ export interface components {
              */
             type: "group";
             /** Children */
-            children: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
+            children: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["FreehandLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1236,7 +1580,7 @@ export interface components {
             };
             /** Plates */
             plates: {
-                [key: string]: string;
+                [key: string]: components["schemas"]["Reference"];
             };
             /** Image Urls */
             image_urls: {
@@ -1283,16 +1627,24 @@ export interface components {
             y: number;
         };
         /**
-         * Project
-         * @description A project's own details. Its registries, scenes and shots are stored and loaded separately.
+         * ProjectIn
+         * @description Request body for creating or renaming a project.
          *
          *     Attributes:
-         *         project_id: str - Unique ID of the project. Defaults to a new random ID.
          *         name: str - Name of the project.
-         *         owner_id: str - User ID of the user who owns the project (Cognito sub).
-         *         created_at: datetime - When the project was created (UTC).
          */
-        Project: {
+        ProjectIn: {
+            /** Name */
+            name: string;
+        };
+        /**
+         * ProjectOut
+         * @description A project, with what the signed-in user may do with it.
+         *
+         *     Attributes:
+         *         access: Literal["owner","editor","viewer"] - Their access: their own project, or the role it's shared with them at.
+         */
+        ProjectOut: {
             /** Project Id */
             project_id: string;
             /** Name */
@@ -1304,17 +1656,11 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-        };
-        /**
-         * ProjectIn
-         * @description Request body for creating or renaming a project.
-         *
-         *     Attributes:
-         *         name: str - Name of the project.
-         */
-        ProjectIn: {
-            /** Name */
-            name: string;
+            /**
+             * Access
+             * @enum {string}
+             */
+            access: "owner" | "editor" | "viewer";
         };
         /**
          * PropLayer
@@ -1357,7 +1703,7 @@ export interface components {
             prop_id: string;
             /** @default towards_camera */
             orientation: components["schemas"]["Orientation"];
-            last_generated_params?: components["schemas"]["PropParams"] | null;
+            last_generated_params?: components["schemas"]["PropParams-Input"] | null;
         };
         /**
          * PropLayer
@@ -1400,7 +1746,7 @@ export interface components {
             prop_id: string;
             /** @default towards_camera */
             orientation: components["schemas"]["Orientation"];
-            last_generated_params: components["schemas"]["PropParams"] | null;
+            last_generated_params: components["schemas"]["PropParams-Output"] | null;
         };
         /**
          * PropOut
@@ -1430,18 +1776,46 @@ export interface components {
         };
         /**
          * PropParams
-         * @description Everything a prop layer's image was generated from (besides the prop's own registry entry).
+         * @description Everything a prop layer's image was generated from: its own orientation, and what the prop's registry entry said (its description, and the front and this orientation's sketches).
          */
-        PropParams: {
+        "PropParams-Input": {
             orientation: components["schemas"]["Orientation"];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Sketches */
+            sketches?: {
+                [key: string]: components["schemas"]["SketchUsed-Input"];
+            };
+        };
+        /**
+         * PropParams
+         * @description Everything a prop layer's image was generated from: its own orientation, and what the prop's registry entry said (its description, and the front and this orientation's sketches).
+         */
+        "PropParams-Output": {
+            orientation: components["schemas"]["Orientation"];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Sketches */
+            sketches: {
+                [key: string]: components["schemas"]["SketchUsed-Output"];
+            };
         };
         /**
          * Reference
-         * @description One reference image of a character or prop, in one orientation. Every pose of them in that orientation is matched to it.
+         * @description One reference image: a character's or prop's in one orientation (every pose of them in that orientation is matched to it), or a location's plate for one facing.
+         *
+         *     A generated one is only a record -- the engine finds it again from what it's drawn from, so an edited description draws a new one. A sketch is the user's own, and is used as it is.
          *
          *     Attributes:
          *         image: str - S3 key of the image.
          *         source: Literal["generated", "sketch"] - Whether it was generated, or sketched by the user (used as-is).
+         *         remove_background: bool - For a character's or prop's sketch, whether its (paper) background is cut away before it's used. Ignored for plates, and for generated references (always cut out). Defaults to True.
          */
         Reference: {
             /** Image */
@@ -1451,6 +1825,11 @@ export interface components {
              * @enum {string}
              */
             source: "generated" | "sketch";
+            /**
+             * Remove Background
+             * @default true
+             */
+            remove_background: boolean;
         };
         /**
          * Scene
@@ -1578,6 +1957,48 @@ export interface components {
          */
         Setting: "interior" | "exterior";
         /**
+         * Share
+         * @description One user's access to someone else's project.
+         *
+         *     Attributes:
+         *         project_id: str - The project shared.
+         *         grantee_id: str - The user it's shared with (their Cognito sub).
+         *         role: ShareRole - What they may do with it.
+         *         granted_by: str - The user who shared it (its owner).
+         *         created_at: datetime - When it was shared (UTC).
+         */
+        Share: {
+            /** Project Id */
+            project_id: string;
+            /** Grantee Id */
+            grantee_id: string;
+            role: components["schemas"]["ShareRole"];
+            /** Granted By */
+            granted_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * ShareIn
+         * @description Request body for sharing a project.
+         *
+         *     Attributes:
+         *         role: ShareRole - What the user may do with it. Only "viewer" is accepted for now.
+         */
+        ShareIn: {
+            /** @default viewer */
+            role: components["schemas"]["ShareRole"];
+        };
+        /**
+         * ShareRole
+         * @description What a share lets its grantee do. Only VIEWER is ever granted for now; EDITOR is reserved for collaboration.
+         * @enum {string}
+         */
+        ShareRole: "viewer" | "editor";
+        /**
          * ShotIn
          * @description Request body for creating a shot.
          *
@@ -1622,10 +2043,11 @@ export interface components {
         };
         /**
          * ShotOut
-         * @description A shot, with a download URL for each of its layers' images.
+         * @description A shot, with a download URL for each of its layers' images, and which of its layers are out of date.
          *
          *     Attributes:
          *         image_urls: dict[str,str] - Download URL for each image key in the shot.
+         *         out_of_date: dict[str,list[str]] - Each generated layer that needs drawing, by ID: the names of what's chanegd since it was drawn (empty if it never has been). Layers that are up to date are not listed.
          */
         ShotOut: {
             /** Id */
@@ -1657,7 +2079,7 @@ export interface components {
              */
             details: string;
             /** Layers */
-            layers: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
+            layers: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["FreehandLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
             /**
              * Version
              * @default 0
@@ -1666,6 +2088,10 @@ export interface components {
             /** Image Urls */
             image_urls: {
                 [key: string]: string;
+            };
+            /** Out Of Date */
+            out_of_date: {
+                [key: string]: string[];
             };
         };
         /**
@@ -1697,7 +2123,7 @@ export interface components {
              */
             details: string;
             /** Layers */
-            layers: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
+            layers: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["FreehandLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
             /** Version */
             version: number;
         };
@@ -1720,6 +2146,162 @@ export interface components {
             shot_id: string;
             /** Order */
             order: number;
+        };
+        /**
+         * SketchOut
+         * @description A sketch, with a download URL for each of its layers' images.
+         *
+         *     Attributes:
+         *         image_urls: dict[str,str] - Download URL for each image key in the sketch.
+         */
+        SketchOut: {
+            /**
+             * Registry
+             * @enum {string}
+             */
+            registry: "characters" | "props" | "locations";
+            /** Entry Id */
+            entry_id: string;
+            /** Slot */
+            slot: string;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Layers */
+            layers: (components["schemas"]["BackgroundLayer-Output"] | components["schemas"]["CharacterLayer-Output"] | components["schemas"]["PropLayer-Output"] | components["schemas"]["TextLayer-Output"] | components["schemas"]["ImageLayer-Output"] | components["schemas"]["FreehandLayer-Output"] | components["schemas"]["GroupLayer-Output"])[];
+            /**
+             * Version
+             * @default 0
+             */
+            version: number;
+            /** Image Urls */
+            image_urls: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * SketchSave
+         * @description Request body for saving a sketch.
+         *
+         *     Attributes:
+         *         layers: list[Layer] - The layer graph, bottom to top.
+         *         version: int - The version the editor loaded (0 for a sketch not saved before).
+         */
+        SketchSave: {
+            /** Layers */
+            layers: (components["schemas"]["BackgroundLayer-Input"] | components["schemas"]["CharacterLayer-Input"] | components["schemas"]["PropLayer-Input"] | components["schemas"]["TextLayer-Input"] | components["schemas"]["ImageLayer-Input"] | components["schemas"]["FreehandLayer-Input"] | components["schemas"]["GroupLayer-Input"])[];
+            /** Version */
+            version: number;
+        };
+        /**
+         * SketchUse
+         * @description Request body for using a flattened sketch as a slot's image.
+         *
+         *     Attributes:
+         *         image: str - S3 key of the flattened sketch -- an upload of this project's.
+         *         remove_background: bool - For a character or prop, whether its background is cut away before it's drawn from. Defaults to True.
+         */
+        SketchUse: {
+            /** Image */
+            image: string;
+            /**
+             * Remove Background
+             * @default true
+             */
+            remove_background: boolean;
+        };
+        /**
+         * SketchUsed
+         * @description A sketched reference or plate that an image was drawn from.
+         *
+         *     Attributes:
+         *         image: str - S3 key of the sketch.
+         *         remove_background: bool - Whether its background was cut away first. Defaults to True.
+         */
+        "SketchUsed-Input": {
+            /** Image */
+            image: string;
+            /**
+             * Remove Background
+             * @default true
+             */
+            remove_background: boolean;
+        };
+        /**
+         * SketchUsed
+         * @description A sketched reference or plate that an image was drawn from.
+         *
+         *     Attributes:
+         *         image: str - S3 key of the sketch.
+         *         remove_background: bool - Whether its background was cut away first. Defaults to True.
+         */
+        "SketchUsed-Output": {
+            /** Image */
+            image: string;
+            /**
+             * Remove Background
+             * @default true
+             */
+            remove_background: boolean;
+        };
+        /**
+         * Stroke
+         * @description One stroke of a freehand layer: a pen line through its points, or (erasing) a line that cuts through the layer's earlier strokes -- only that layer's, never what's beneath it.
+         *
+         *     Attributes:
+         *         points: list[float] - The line's points as flat x, y pairs (x1, y1, x2, y2, ...), in the layer's own space: (0, 0) is its centre, which its transform places.
+         *         colour: str - Pen colour, as #rrggbb. Defaults to black. Ignored for an erasing stroke.
+         *         width: float - Line width (in the layer's own pixels). Defaults to 4.
+         *         erase: bool - Whether the stroke erases rather than draws. Defaults to False.
+         */
+        "Stroke-Input": {
+            /** Points */
+            points: number[];
+            /**
+             * Colour
+             * @default #000000
+             */
+            colour: string;
+            /**
+             * Width
+             * @default 4
+             */
+            width: number;
+            /**
+             * Erase
+             * @default false
+             */
+            erase: boolean;
+        };
+        /**
+         * Stroke
+         * @description One stroke of a freehand layer: a pen line through its points, or (erasing) a line that cuts through the layer's earlier strokes -- only that layer's, never what's beneath it.
+         *
+         *     Attributes:
+         *         points: list[float] - The line's points as flat x, y pairs (x1, y1, x2, y2, ...), in the layer's own space: (0, 0) is its centre, which its transform places.
+         *         colour: str - Pen colour, as #rrggbb. Defaults to black. Ignored for an erasing stroke.
+         *         width: float - Line width (in the layer's own pixels). Defaults to 4.
+         *         erase: bool - Whether the stroke erases rather than draws. Defaults to False.
+         */
+        "Stroke-Output": {
+            /** Points */
+            points: number[];
+            /**
+             * Colour
+             * @default #000000
+             */
+            colour: string;
+            /**
+             * Width
+             * @default 4
+             */
+            width: number;
+            /**
+             * Erase
+             * @default false
+             */
+            erase: boolean;
         };
         /**
          * TaskStatus
@@ -2041,7 +2623,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Project"][];
+                    "application/json": components["schemas"]["ProjectOut"][];
                 };
             };
         };
@@ -2065,7 +2647,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Project"];
+                    "application/json": components["schemas"]["ProjectOut"];
                 };
             };
             /** @description Validation Error */
@@ -2096,7 +2678,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Project"];
+                    "application/json": components["schemas"]["ProjectOut"];
                 };
             };
             /** @description Validation Error */
@@ -2160,7 +2742,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Project"];
+                    "application/json": components["schemas"]["ProjectOut"];
                 };
             };
             /** @description Validation Error */
@@ -2319,6 +2901,146 @@ export interface operations {
                 "application/json": components["schemas"]["CharacterPatch"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_sketch_projects__project_id__characters__entry_id__sketches__slot__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_sketch_projects__project_id__characters__entry_id__sketches__slot__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    use_sketch_projects__project_id__characters__entry_id__sketches__slot__use_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchUse"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_using_sketch_projects__project_id__characters__entry_id__sketches__slot__use_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2538,6 +3260,146 @@ export interface operations {
             };
         };
     };
+    read_sketch_projects__project_id__props__entry_id__sketches__slot__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_sketch_projects__project_id__props__entry_id__sketches__slot__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    use_sketch_projects__project_id__props__entry_id__sketches__slot__use_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchUse"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_using_sketch_projects__project_id__props__entry_id__sketches__slot__use_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Orientation"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PropOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     entry_usage_projects__project_id__props__entry_id__usage_get: {
         parameters: {
             query?: never;
@@ -2720,6 +3582,146 @@ export interface operations {
                 "application/json": components["schemas"]["LocationPatch"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_sketch_projects__project_id__locations__entry_id__sketches__slot__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Facing"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_sketch_projects__project_id__locations__entry_id__sketches__slot__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Facing"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SketchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    use_sketch_projects__project_id__locations__entry_id__sketches__slot__use_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Facing"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SketchUse"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_using_sketch_projects__project_id__locations__entry_id__sketches__slot__use_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+                slot: components["schemas"]["Facing"];
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -3368,6 +4370,103 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GenerationJob"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_shares_projects__project_id__shares_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Share"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    share_project_projects__project_id__shares__grantee_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                grantee_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Share"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unshare_project_projects__project_id__shares__grantee_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                grantee_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

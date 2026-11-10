@@ -110,14 +110,17 @@ class Generator:
             GeneratedLayer - A copy of the layer showing the image, with last_generated_params recording what it was drawn from.
         """
         if isinstance(layer, BackgroundLayer):
+            entry = location
             image = self.background(location, layer.facing, shot.shot_size, shot.angle, shot.details, scene.time_of_day, scene.atmosphere)
         elif isinstance(layer, CharacterLayer):
-            image = self.character(characters[layer.character_id], layer.orientation, layer.action)
+            entry = characters[layer.character_id]
+            image = self.character(entry, layer.orientation, layer.action)
         elif isinstance(layer, PropLayer):
-            image = self.prop(props[layer.prop_id], layer.orientation)
+            entry = props[layer.prop_id]
+            image = self.prop(entry, layer.orientation)
         else:
             raise TypeError(f"{type(layer).__name__} is not a generated layer")
-        params = layer.current_params(shot.generation_context(scene))
+        params = layer.current_params(shot.generation_context(scene), entry)
         return layer.model_copy(update={"image": image, "last_generated_params": params})
 
     # --- Backgrounds ----------------------------------------------------------------------------------------------
@@ -133,15 +136,17 @@ class Generator:
         Returns:
             str - S3 key of the plate.
         """
-        if facing in location.plates:
-            return location.plates[facing]
+        recorded = location.plates.get(facing)
+        if recorded is not None and recorded.source == "sketch":
+            return recorded.image
         if facing != Facing.NORTH and facing not in location.views:
             # Nothing says what's on this side, so it shows the north plate -- not recorded as its own, so adding a view draws it
             return self.plate(location, Facing.NORTH)
-        sources = [] if facing == Facing.NORTH else [self.plate(location, Facing.NORTH)]
+        sources = [] if facing == Facing.NORTH else [self.plate(location,Facing.NORTH)]
         key = self._background("plate", prompts.plate_prompt(location, facing), sources)
-        location.plates[facing] = key
-        self._store.save_entry_image(self.project_id, location, facing.value)
+        if recorded is None or recorded.image != key:
+            location.plates[facing] = Reference(image=key, source="generated")
+            self._store.save_entry_image(self.project_id, location, facing.value)
         return key
 
     def background(
@@ -276,14 +281,27 @@ class Generator:
         """
         A character's or prop's reference in one orientation: the one recorded on its entry, or else a new cutout -- the front one drawn from the prompt alone, any other drawn from the front one -- recorded there.
         """
-        if orientation in entry.references:
-            return entry.references[orientation].image
+        recorded = entry.references.get(orientation)
+        if recorded is not None and recorded.source == "sketch":
+            return self._sketch(recorded, remove)
         text = prompt()
         sources = [] if orientation == Orientation.TOWARDS_CAMERA else [front()]
-        key = self._derive("reference", text, sources, lambda images: self._cutout(text, generate, remove, images))
-        entry.references[orientation] = Reference(image=key, source="generated")
-        self._store.save_entry_image(self.project_id, entry, orientation.value)
+        key = self._derive(
+            "reference", text, sources,
+            lambda images: self._cutout(text, generate, remove, images),
+        )
+        if recorded is None or recorded.image != key:
+            entry.references[orientation] = Reference(image=key, source="generated")
+            self._store.save_entry_image(self.project_id, entry, orientation.value)
         return key
+
+    def _sketch(self, sketch: Reference, remove: RemoveBackground) -> str:
+        """
+        A sketched reference, ready to draw from: as it is, or cut otu of its background (once -- then found by its key).
+        """
+        if not sketch.remove_background:
+            return sketch.image
+        return self._derive("sketch-cutout","",[sketch.image],lambda images: remove(images[0]))
 
     def _cutout(self, prompt: str, generate: GenerateImage, remove: RemoveBackground, references: list[bytes]) -> bytes:
         """

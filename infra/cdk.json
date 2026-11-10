@@ -2,6 +2,6 @@
   "app": "python app.py",
   "context": {
     "corsOrigin": "https://taleboard.vercel.app,http://localhost:5173",
-    "alarmEmail": ""
+    "alarmEmail": "sidharthanil32@gmail.com"
   }
 }
