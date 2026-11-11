@@ -61,7 +61,7 @@ export function ScenePicker({
         <PopoverTrigger asChild>
           <Button
             variant="outline"
-            className="h-auto min-w-0 justify-between gap-3 py-1.5 text-left"
+            className="h-auto min-w-0 shrink justify-between gap-3 py-1.5 text-left"
           >
             {current ? (
               <span className="flex min-w-0 flex-col">

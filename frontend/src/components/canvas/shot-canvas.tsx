@@ -18,7 +18,6 @@ import {
   Text,
   Transformer,
 } from "react-konva"
-import useImage from "use-image"
 
 import type { Pen, Tool } from "@/components/canvas/tool-strip"
 import {
@@ -29,6 +28,7 @@ import {
   type FreehandLayer,
   type Stroke,
 } from "@/lib/freehand"
+import { useLoadedImage } from "@/lib/images"
 import { FONT_FAMILIES } from "@/lib/labels"
 import {
   apply,
@@ -822,19 +822,6 @@ function pictureSize(
   return image ? [image.width, image.height] : PLACEHOLDER_SIZE[layer.type]
 }
 
-/** A picture's image, once it has loaded -- null before then, or if it has none */
-function usePicture(url: string | null): {
-  image: HTMLImageElement | null
-  failed: boolean
-} {
-  // "anonymous" so S3 sends CORS headers -- otherwise the canvas would be "tainted" and could never be exported
-  const [image, status] = useImage(url ?? "", "anonymous")
-  return {
-    image: url && image && status === "loaded" ? image : null,
-    failed: status === "failed",
-  }
-}
-
 /**
  * A layer's picture, centred and warped onto its corners if it has any -- or, until it has an image, a dashed
  * placeholder (in the same shape) saying what will go there.
@@ -850,7 +837,7 @@ function PictureContent({
   url: string | null
   label: string
 }) {
-  const { image, failed } = usePicture(url)
+  const { image, failed } = useLoadedImage(url)
   const [width, height] = pictureSize(layer, image)
   const fill = layer.type === "background"
 
@@ -982,7 +969,7 @@ function CornerHandles({
   onPreview: (corners: Corners) => void
   onCommit: () => void
 }) {
-  const { image } = usePicture(url)
+  const { image } = useLoadedImage(url)
   // The box the corners are fractions of: a picture's own, centred on its middle; a drawing's strokes' bounds
   const box: Bounds =
     layer.type === "freehand"

@@ -8,7 +8,7 @@ import { useProject } from "@/lib/projects"
 import { cn } from "@/lib/utils"
 
 /**
- * The bar across the top of every page: the logo (home, or your projects once signed in), the open project's name in
+ * The bar across the top of every page: the logo (home -- or, inside a project, back to your projects), the open project's name in
  * the middle when there is one, and signing in or out -- or, for a guest, signing up or leaving.
  */
 export function AppHeader() {
@@ -37,7 +37,10 @@ export function AppHeader() {
           !projectId && "max-w-6xl"
         )}
       >
-        <Link to={browsing ? "/projects" : "/"} className="justify-self-start">
+        <Link
+          to={projectId && browsing ? "/projects" : "/"}
+          className="justify-self-start"
+        >
           <Logo className="h-8" />
         </Link>
         <div className="min-w-0">

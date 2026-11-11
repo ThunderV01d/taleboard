@@ -127,10 +127,14 @@ function SketchView({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-4 py-2">
+      {/* On a narrow screen: the editor's toolbar on one row, the title and the way back on the next */}
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 lg:grid lg:grid-cols-[1fr_auto_1fr] lg:gap-3">
         {/* The editor's undo/redo, save status and "Use this sketch" are drawn here (a portal), on the left */}
-        <div ref={setToolbarSlot} className="flex min-w-0 items-center gap-3" />
-        <div className="text-center">
+        <div
+          ref={setToolbarSlot}
+          className="flex w-full min-w-0 flex-wrap items-center gap-3 lg:w-auto"
+        />
+        <div className="min-w-0 flex-1 text-left lg:flex-none lg:text-center">
           <h1 className="font-medium">
             {entry.name} -- {slotLabels(kind)[slot]}
           </h1>

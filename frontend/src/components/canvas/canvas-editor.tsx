@@ -2,6 +2,8 @@ import {
   CloudCheckIcon,
   CloudUploadIcon,
   EyeIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
   Redo2Icon,
   TriangleAlertIcon,
   Undo2Icon,
@@ -73,6 +75,7 @@ import {
 } from "@/lib/layers"
 import type { Character, Prop } from "@/lib/registries"
 import { imageSize, uploadImage } from "@/lib/uploads"
+import { cn } from "@/lib/utils"
 import { isUnwarped, type Corners } from "@/lib/warp"
 import { FIT, ZOOM_STEP, zoomAt, type View } from "@/lib/zoom"
 
@@ -146,6 +149,9 @@ export type EditorActions = {
  *
  * Read-only (a project shared with the user to view), layers can be picked -- the panels then show their properties,
  * disabled -- and the view zoomed and panned, but nothing can be changed, so nothing is ever saved.
+ *
+ * On a narrow screen (a phone or tablet) the canvas takes the width: the layers panel and the details panel slide out
+ * over it instead, from two buttons in the toolbar row, and the tool strip stays beside it.
  */
 export function CanvasEditor<F>({
   projectId,
@@ -227,6 +233,8 @@ export function CanvasEditor<F>({
   const [problem, setProblem] = useState<string | null>(null)
   // The layers waiting on "Delete these layers?" (every delete asks first)
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
+  // Which side panel is slid out over the canvas -- on a narrow screen only (on a wide one both are always shown)
+  const [drawer, setDrawer] = useState<"layers" | "details" | null>(null)
   const [tool, setTool] = useState<Tool>("select")
   const [pen, setPen] = useState<Pen>({ colour: "#000000", width: 4 })
   const canvas = useRef<CanvasHandle>(null)
@@ -673,9 +681,35 @@ export function CanvasEditor<F>({
     setProblem,
   }
 
+  const drawerButtons = (
+    <span className="flex items-center gap-1 lg:hidden">
+      <Button
+        variant={drawer === "layers" ? "secondary" : "outline"}
+        size="icon-sm"
+        title="Layers"
+        aria-label="Layers"
+        aria-pressed={drawer === "layers"}
+        onClick={() => setDrawer(drawer === "layers" ? null : "layers")}
+      >
+        <PanelLeftIcon />
+      </Button>
+      <Button
+        variant={drawer === "details" ? "secondary" : "outline"}
+        size="icon-sm"
+        title="Details"
+        aria-label="Details"
+        aria-pressed={drawer === "details"}
+        onClick={() => setDrawer(drawer === "details" ? null : "details")}
+      >
+        <PanelRightIcon />
+      </Button>
+    </span>
+  )
+
   const toolbarRow = readOnly ? (
     <>
-      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      {drawerButtons}
+      <span className="flex items-center gap-1.5 text-sm whitespace-nowrap text-muted-foreground">
         <EyeIcon className="size-4" />
         View only
       </span>
@@ -684,6 +718,7 @@ export function CanvasEditor<F>({
     </>
   ) : (
     <>
+      {drawerButtons}
       <Button
         variant="outline"
         size="icon-sm"
@@ -714,11 +749,18 @@ export function CanvasEditor<F>({
     <div className="flex min-h-0 flex-1">
       {toolbarSlot && createPortal(toolbarRow, toolbarSlot)}
       <aside
-        className="flex w-80 shrink-0 border-r"
+        className="flex shrink-0 border-r lg:w-80"
         aria-label="Tools and layers"
       >
         <ToolStrip tool={tool} onTool={setTool} readOnly={readOnly} />
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div
+          className={cn(
+            "min-w-0 flex-col bg-background lg:static lg:flex lg:w-auto lg:max-w-none lg:flex-1 lg:shadow-none",
+            drawer === "layers"
+              ? "fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] border-r shadow-lg"
+              : "hidden"
+          )}
+        >
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             <LayersPanel
               layers={state.draft.layers}
@@ -841,7 +883,12 @@ export function CanvasEditor<F>({
 
       <fieldset
         disabled={readOnly}
-        className="w-80 min-w-0 shrink-0 overflow-y-auto border-l p-4"
+        className={cn(
+          "min-w-0 overflow-y-auto border-l bg-background p-4 lg:static lg:block lg:w-80 lg:max-w-none lg:shrink-0 lg:shadow-none",
+          drawer === "details"
+            ? "fixed inset-y-0 right-0 z-50 w-80 max-w-[85vw] shadow-lg"
+            : "hidden"
+        )}
         aria-label="Layer details"
       >
         <LayerProperties
@@ -862,6 +909,15 @@ export function CanvasEditor<F>({
           readOnly={readOnly}
         />
       </fieldset>
+
+      {drawer && (
+        // Behind a slid-out panel: tapping the canvas closes it
+        <div
+          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+          aria-hidden
+          onClick={() => setDrawer(null)}
+        />
+      )}
 
       {confirmDelete && (
         <DeleteLayersDialog
@@ -982,7 +1038,10 @@ function SaveIndicator({
       ) : (
         <CloudCheckIcon className="size-4" />
       )}
-      <span aria-live="polite">{text}</span>
+      {/* Just the cloud on a narrow screen -- the words are still read out */}
+      <span aria-live="polite" className="sr-only sm:not-sr-only">
+        {text}
+      </span>
       {dirty && status !== "saving" && status !== "conflict" && (
         <Button
           variant="outline"

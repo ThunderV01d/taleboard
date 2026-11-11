@@ -34,6 +34,7 @@ import {
   useJobs,
   type GenerationJob,
 } from "@/lib/generation"
+import { loadImage } from "@/lib/images"
 import { readLastShot, writeLastShot } from "@/lib/last-shot"
 import { canEdit, useProject } from "@/lib/projects"
 import { useCharacters, useLocations, useProps } from "@/lib/registries"
@@ -124,6 +125,15 @@ export function ProjectEditorPage() {
       writeLastShot(projectId, { scene: sceneId, shot: shotId })
     }
   }, [projectId, sceneId, shotId])
+
+  // Load the pictures of the shots either side of this one, so stepping to the next or previous shot draws it at once
+  const previousShot = shotList[shotIndex - 1]
+  const nextShot = shotList[shotIndex + 1]
+  useEffect(() => {
+    for (const near of [previousShot, nextShot]) {
+      Object.values(near?.image_urls ?? {}).forEach(loadImage)
+    }
+  }, [previousShot, nextShot])
   const reorderScenes = useReorderScenes(projectId)
   const reorderShots = useReorderShots(projectId, scene?.id ?? "")
   const reorderError = reorderScenes.error ?? reorderShots.error
@@ -151,27 +161,34 @@ export function ProjectEditorPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-4 py-2">
+      {/* On a narrow screen: the shot's toolbar on one row, the scene picker and the buttons on the next */}
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 lg:grid lg:grid-cols-[1fr_auto_1fr] lg:gap-3">
         {/* The open shot's undo/redo and save status are drawn here by its editor (a portal), on the left */}
-        <div ref={setToolbarSlot} className="flex min-w-0 items-center gap-2" />
-        <ScenePicker
-          scenes={sceneList}
-          locations={locations.data ?? []}
-          current={scene}
-          onSelect={(s) => select(s.id)}
-          onReorder={(ids) => {
-            // Pin the current scene (and shot) in the address first -- otherwise a page showing "the first scene"
-            // would jump to whichever scene is first after the move
-            if (scene) {
-              select(scene.id, shot?.id)
-            }
-            reorderScenes.mutate(ids)
-          }}
-          onNew={() => setPanel({ kind: "newScene" })}
-          onEdit={(s) => setPanel({ kind: "editScene", scene: s })}
-          onDelete={(s) => setPanel({ kind: "deleteScene", scene: s })}
-          readOnly={readOnly}
+        <div
+          ref={setToolbarSlot}
+          className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto"
         />
+        <div className="min-w-0 flex-1 lg:flex-none">
+          <ScenePicker
+            scenes={sceneList}
+            locations={locations.data ?? []}
+            current={scene}
+            onSelect={(s) => select(s.id)}
+            onReorder={(ids) => {
+              // Pin the current scene (and shot) in the address first -- otherwise a page showing "the first scene"
+              // would jump to whichever scene is first after the move
+              if (scene) {
+                select(scene.id, shot?.id)
+              }
+              reorderScenes.mutate(ids)
+            }}
+            onNew={() => setPanel({ kind: "newScene" })}
+            onEdit={(s) => setPanel({ kind: "editScene", scene: s })}
+            onDelete={(s) => setPanel({ kind: "deleteScene", scene: s })}
+            readOnly={readOnly}
+          />
+        </div>
+        {/* The buttons' words show only on a wide screen -- on a narrower one, their icons (and tooltips) */}
         <div className="flex justify-end gap-2">
           {!readOnly && (
             <Button
@@ -184,25 +201,25 @@ export function ProjectEditorPage() {
               ) : (
                 <SparklesIcon />
               )}
-              Generate everything
+              <span className="hidden xl:inline">Generate everything</span>
             </Button>
           )}
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/projects/${projectId}/characters`}>
+            <Link to={`/projects/${projectId}/characters`} title="Characters">
               <UsersIcon />
-              Characters
+              <span className="hidden xl:inline">Characters</span>
             </Link>
           </Button>
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/projects/${projectId}/locations`}>
+            <Link to={`/projects/${projectId}/locations`} title="Locations">
               <MapPinIcon />
-              Locations
+              <span className="hidden xl:inline">Locations</span>
             </Link>
           </Button>
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/projects/${projectId}/props`}>
+            <Link to={`/projects/${projectId}/props`} title="Props">
               <PackageIcon />
-              Props
+              <span className="hidden xl:inline">Props</span>
             </Link>
           </Button>
         </div>
